@@ -1,0 +1,87 @@
+name: Update Dzialki Script and Upload Excel
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Run every 6 hours at 0:00, 6:00, 12:00, 18:00 UTC
+  workflow_dispatch:      # Allow manual trigger
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout latest code
+        uses: actions/checkout@v3
+        with:
+          ref: main
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install selenium pandas geopy openpyxl google-api-python-client google-auth
+
+      - name: Download and install geckodriver
+        run: |
+          wget https://github.com/mozilla/geckodriver/releases/latest/download/geckodriver-linux64.tar.gz
+          tar -xvzf geckodriver-linux64.tar.gz
+          chmod +x geckodriver
+          sudo mv geckodriver /usr/local/bin/
+
+      - name: Run the scraping script
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+        run: |
+          # Install Xvfb for headless Firefox support
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+          # Start virtual framebuffer
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x720x24 &
+
+          python script.py
+
+      - name: Upload Excel file to Google Drive
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          EXCEL_FILE: 'wyniki_ofert_z_filtra.xlsx'
+        run: |
+          pip install google-api-python-client google-auth
+          python -c "
+import os, json
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
+creds_json = json.loads(os.environ['GOOGLE_CREDENTIALS'])
+creds = service_account.Credentials.from_service_account_info(creds_json, scopes=['https://www.googleapis.com/auth/drive.file'])
+service = build('drive', 'v3', credentials=creds)
+
+folder_id = os.environ['FOLDER_ID']
+file_name = os.environ['EXCEL_FILE']
+file_path = file_name
+
+# Search for existing file in the folder
+results = service.files().list(q=f\"name='{file_name}' and '{folder_id}' in parents\", spaces='drive').execute()
+files = results.get('files', [])
+
+media = MediaFileUpload(file_path, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
+
+if files:
+    # Update the first matching file
+    file_id = files[0]['id']
+    service.files().update(fileId=file_id, media_body=media).execute()
+    print(f'Updated file on Drive: {file_name}')
+else:
+    # Create a new file in the folder
+    file_metadata = {'name': file_name, 'parents': [folder_id]}
+    service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print(f'Uploaded new file to Drive: {file_name}')
+"
