@@ -1,5 +1,4 @@
 import platform
-import subprocess
 import sys
 import os
 import time
@@ -21,42 +20,25 @@ from openpyxl import Workbook, load_workbook
 from webdriver_manager.firefox import GeckoDriverManager
 
 # =======================
-# Install missing packages
-# =======================
-def install_missing_packages():
-    """
-    Install required Python packages if they are not already installed.
-    """
-    required = ["selenium", "pandas", "geopy", "openpyxl", "webdriver-manager"]
-    for package in required:
-        try:
-            __import__(package)
-        except ImportError:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-install_missing_packages()
-
-# =======================
 # Firefox & Geckodriver
 # =======================
 def get_firefox_driver():
     """
-    Configure Firefox WebDriver.
-    Works on both Windows (local) and Linux (e.g., GitHub Actions).
+    Configure Firefox WebDriver with geckodriver v0.34.0.
+    Works on both Windows and Linux (GitHub Actions).
     """
     options = Options()
-    options.add_argument('--headless')  # Run in headless mode (no GUI)
+    options.add_argument('--headless')  
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
 
-    # Windows: specify Firefox binary path if needed
+    # Windows: specify Firefox binary if needed
     if platform.system().lower() == "windows":
         firefox_binary = r"C:\Program Files\Mozilla Firefox\firefox.exe"
         options.binary_location = firefox_binary
 
-    # Add timeout=120 seconds for GeckoDriver service startup
-    service = Service(GeckoDriverManager().install(), timeout=120)
-
+    # Use a fixed geckodriver version for stability
+    service = Service(GeckoDriverManager(version="v0.34.0").install(), timeout=120)
     return webdriver.Firefox(service=service, options=options)
 
 driver = get_firefox_driver()
@@ -115,10 +97,7 @@ def extract_town_from_location(location):
     else:
         for i, part in enumerate(parts):
             if 'ul.' in part.lower():
-                if i == 0 and len(parts) > 1:
-                    return parts[1]
-                elif i > 0:
-                    return parts[0]
+                return parts[1] if i == 0 and len(parts) > 1 else parts[0]
         return parts[0]
 
 def safe_geocode(location, max_retries=3):
@@ -155,8 +134,7 @@ def scrape_offers(base_link, district_name):
         links_elements = WebDriverWait(driver, 10).until(
             EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector))
         )
-        listing_links_raw = [elem.get_attribute('href') for elem in links_elements]
-        listing_links = list(OrderedDict.fromkeys(listing_links_raw))
+        listing_links = list(OrderedDict.fromkeys(elem.get_attribute('href') for elem in links_elements))
         if not listing_links:
             print(f"[{district_name}] No data found.")
             return results
@@ -179,7 +157,7 @@ def scrape_offers(base_link, district_name):
             except NoSuchElementException:
                 location = 'No location'
             town_name = extract_town_from_location(location)
-            distance_km = get_distance_to_krakow(town_name)
+            distance_km = get_distance_to_krakow(town_name) or 0.0
             results.append({
                 'Tytuł': title,
                 'Lokalizacja': location,
@@ -204,12 +182,10 @@ def update_sheet(results, sheet_name):
     today_str = datetime.date.today().strftime('%Y-%m-%d')
     if os.path.exists(EXCEL_FILE):
         xls = pd.ExcelFile(EXCEL_FILE)
-        if sheet_name in xls.sheet_names:
-            existing_df = pd.read_excel(EXCEL_FILE, sheet_name=sheet_name)
-        else:
-            existing_df = pd.DataFrame(columns=HEADERS)
+        existing_df = pd.read_excel(EXCEL_FILE, sheet_name=sheet_name) if sheet_name in xls.sheet_names else pd.DataFrame(columns=HEADERS)
     else:
         existing_df = pd.DataFrame(columns=HEADERS)
+
     new_rows = []
     for result in results:
         matched_rows = existing_df[(existing_df['Tytuł'] == result['Tytuł']) &
@@ -220,13 +196,15 @@ def update_sheet(results, sheet_name):
             existing_df.at[idx, 'Aktywne'] = True
         else:
             new_rows.append(result)
+
     if new_rows:
-        new_df = pd.DataFrame(new_rows)
-        if not new_df.empty:
-            existing_df = pd.concat([existing_df, new_df], ignore_index=True)
+        existing_df = pd.concat([existing_df, pd.DataFrame(new_rows)], ignore_index=True)
+
     existing_links = [r['Link'] for r in results]
     if not existing_df.empty and 'Link' in existing_df.columns:
         existing_df['Aktywne'] = existing_df['Link'].apply(lambda l: l in existing_links)
+
+    # Save to Excel
     if os.path.exists(EXCEL_FILE):
         book = load_workbook(EXCEL_FILE)
         if sheet_name in book.sheetnames:
@@ -234,14 +212,14 @@ def update_sheet(results, sheet_name):
             book.remove(std)
         book.save(EXCEL_FILE)
         book.close()
+
     with pd.ExcelWriter(EXCEL_FILE, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
         existing_df.to_excel(writer, sheet_name=sheet_name, index=False)
         worksheet = writer.sheets[sheet_name]
         for idx, col in enumerate(existing_df.columns, 1):
-            max_length = max(
-                [len(str(cell)) for cell in existing_df[col].astype(str).values] + [len(col)]
-            )
+            max_length = max([len(str(cell)) for cell in existing_df[col].astype(str).values] + [len(col)])
             worksheet.column_dimensions[get_column_letter(idx)].width = max_length + 2
+
     print(f"Saved {len(existing_df)} offers to sheet '{sheet_name}'")
 
 # =======================

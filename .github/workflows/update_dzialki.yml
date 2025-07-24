@@ -34,20 +34,20 @@ jobs:
       - name: Show Firefox version
         run: firefox --version
 
-      - name: Show Geckodriver version
-        run: geckodriver --version || echo "geckodriver not found"
-
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install selenium pandas geopy openpyxl webdriver-manager
+          pip install selenium pandas geopy openpyxl
+          pip install webdriver-manager==4.0.2
 
       - name: Run Selenium scraper
+        env:
+          WDM_FIREFOX_VERSION: v0.34.0
         run: python script.py  # <-- nazwa pliku
 
-      - name: Commit and push Excel file
+      - name: Pull, commit and push Excel file
         run: |
+          git pull --rebase origin main || true
           git add wyniki_ofert_z_filtra.xlsx || true
           git commit -m "Automatyczna aktualizacja Excela [$(date '+%Y-%m-%d %H:%M:%S')]" || echo "Brak zmian do commitowania"
-          git pull --rebase origin main
           git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
