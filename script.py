@@ -1,53 +1,21 @@
-import platform
-import sys
-import os
+import requests
 import time
 import datetime
+import os
 import pandas as pd
 from collections import OrderedDict
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.firefox.options import Options
-from selenium.webdriver.firefox.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from bs4 import BeautifulSoup
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
-from openpyxl.utils import get_column_letter
 from openpyxl import Workbook, load_workbook
-from webdriver_manager.firefox import GeckoDriverManager
-
-# =======================
-# Firefox & Geckodriver
-# =======================
-def get_firefox_driver():
-    """
-    Configure Firefox WebDriver with geckodriver v0.34.0.
-    Works on both Windows and Linux (GitHub Actions).
-    """
-    options = Options()
-    options.add_argument('--headless')  
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-
-    # Windows: specify Firefox binary if needed
-    if platform.system().lower() == "windows":
-        firefox_binary = r"C:\Program Files\Mozilla Firefox\firefox.exe"
-        options.binary_location = firefox_binary
-
-    # Use a fixed geckodriver version for stability
-    service = Service(GeckoDriverManager(version="v0.34.0").install(), timeout=120)
-    return webdriver.Firefox(service=service, options=options)
-
-driver = get_firefox_driver()
+from openpyxl.utils import get_column_letter
 
 # =======================
 # CONFIGURATION
 # =======================
-BASE_LINK_KRAKOW = 'https://www.otodom.pl/pl/wyniki/sprzedaz/dzialka/malopolskie/krakowski?limit=72&priceMax=250000&areaMin=1300&plotType=%5BBUILDING%2CAGRICULTURAL_BUILDING%5D&by=DEFAULT&direction=DESC&mapBounds=19.88207268057927%2C50.13765811720768%2C19.522553426522684%2C49.996078810825225'
-BASE_LINK_WIELICKI = 'https://www.otodom.pl/pl/wyniki/sprzedaz/dzialka/malopolskie/wielicki?distanceRadius=5&limit=72&priceMax=250000&areaMin=1300&plotType=%5BBUILDING%2CAGRICULTURAL_BUILDING%5D&by=DEFAULT&direction=DESC&mapBounds=20.384339742267844%2C50.01972870299939%2C20.25464958097848%2C49.96857906158435'
+BASE_LINK_KRAKOW = 'https://www.otodom.pl/pl/wyniki/sprzedaz/dzialka/malopolskie/krakowski?limit=72&priceMax=250000&areaMin=1300&plotType=%5BBUILDING%2CAGRICULTURAL_BUILDING%5D&by=DEFAULT&direction=DESC'
+BASE_LINK_WIELICKI = 'https://www.otodom.pl/pl/wyniki/sprzedaz/dzialka/malopolskie/wielicki?distanceRadius=5&limit=72&priceMax=250000&areaMin=1300&plotType=%5BBUILDING%2CAGRICULTURAL_BUILDING%5D&by=DEFAULT&direction=DESC'
 
 KRAKOW_COORDS = (50.0647, 19.9450)
 EXCEL_FILE = 'wyniki_ofert_z_filtra.xlsx'
@@ -88,17 +56,14 @@ def create_excel_with_sheets():
 # UTILITY FUNCTIONS
 # =======================
 def parse_price(price_str):
-    return int(price_str.replace(' ', '').replace('zł', '').replace('PLN', '').strip())
+    return int(price_str.replace(' ', '').replace('zł', '').replace('PLN', '').replace(',', '').strip())
 
 def extract_town_from_location(location):
+    """
+    Wyciąga miejscowość z pola lokalizacja (ostatni fragment).
+    """
     parts = [p.strip() for p in location.split(',')]
-    if len(parts) == 1:
-        return parts[0]
-    else:
-        for i, part in enumerate(parts):
-            if 'ul.' in part.lower():
-                return parts[1] if i == 0 and len(parts) > 1 else parts[0]
-        return parts[0]
+    return parts[-1] if parts else location
 
 def safe_geocode(location, max_retries=3):
     for _ in range(max_retries):
@@ -109,10 +74,15 @@ def safe_geocode(location, max_retries=3):
     return None
 
 def get_distance_to_krakow(town_name):
-    places = safe_geocode(f"{town_name}, Polska")
+    """
+    Liczy odległość w km od Krakowa do miejscowości.
+    """
+    query = f"{town_name}, małopolskie, Polska"
+    places = safe_geocode(query)
     if not places:
-        print(f"Geocoding error for '{town_name}'")
+        print(f"Geocoding error for '{query}'")
         return None
+
     min_dist = float('inf')
     for place in places:
         if place and hasattr(place, 'point'):
@@ -123,58 +93,75 @@ def get_distance_to_krakow(town_name):
 # =======================
 # SCRAPING OFFERS
 # =======================
+HEADERS_HTTP = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8"
+}
+
 def scrape_offers(base_link, district_name):
     results = []
     today_str = datetime.date.today().strftime('%Y-%m-%d')
     print(f"Scraping offers for: {district_name}")
+
     try:
-        driver.get(base_link)
-        time.sleep(5)
-        selector = 'a[data-cy="listing-item-link"]' if district_name != 'powiat wielicki' else 'a[href*="/pl/oferta/"]'
-        links_elements = WebDriverWait(driver, 10).until(
-            EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector))
-        )
-        listing_links = list(OrderedDict.fromkeys(elem.get_attribute('href') for elem in links_elements))
-        if not listing_links:
-            print(f"[{district_name}] No data found.")
+        response = requests.get(base_link, headers=HEADERS_HTTP, timeout=30)
+        if response.status_code != 200:
+            print(f"[{district_name}] HTTP Error {response.status_code}")
             return results
-        print(f"Found {len(listing_links)} unique offers on the page for {district_name}.")
-        for idx, url in enumerate(listing_links, start=1):
-            print(f"Fetching offer {idx}/{len(listing_links)}: {url}")
-            driver.get(url)
-            time.sleep(3)
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        offer_links = []
+        for a in soup.select('a[data-cy="listing-item-link"]'):
+            href = a.get('href')
+            if href:
+                if href.startswith('/'):
+                    href = 'https://www.otodom.pl' + href
+                offer_links.append(href)
+
+        offer_links = list(OrderedDict.fromkeys(offer_links))  # unique
+        print(f"Found {len(offer_links)} unique offers on the page for {district_name}.")
+
+        for idx, url in enumerate(offer_links, start=1):
+            print(f"Fetching offer {idx}/{len(offer_links)}: {url}")
             try:
-                title = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, 'h1'))).text
-            except TimeoutException:
-                title = 'No title'
-            try:
-                price_raw = driver.find_element(By.CSS_SELECTOR, 'strong[data-cy="adPageHeaderPrice"]').text
-                price = parse_price(price_raw)
-            except NoSuchElementException:
-                price = None
-            try:
-                location = driver.find_element(By.CSS_SELECTOR, 'div[data-sentry-component="MapLink"] a').text
-            except NoSuchElementException:
-                location = 'No location'
-            town_name = extract_town_from_location(location)
-            distance_km = get_distance_to_krakow(town_name) or 0.0
-            results.append({
-                'Tytuł': title,
-                'Lokalizacja': location,
-                'Cena pierwszego znalezienia': price,
-                'Data pierwszego znalezienia': today_str,
-                'Data ostatniej aktualizacji': today_str,
-                'Cena ostatniej aktualizacji': price,
-                'Odległość od Krakowa (km)': distance_km,
-                'Aktywne': True,
-                'Link': url
-            })
-    except TimeoutException:
-        print(f"[{district_name}] Timeout: No offers found.")
+                offer_resp = requests.get(url, headers=HEADERS_HTTP, timeout=30)
+                if offer_resp.status_code != 200:
+                    print(f"Error {offer_resp.status_code} for {url}")
+                    continue
+
+                offer_soup = BeautifulSoup(offer_resp.text, "html.parser")
+                title = offer_soup.find('h1').text.strip() if offer_soup.find('h1') else "No title"
+
+                price_tag = offer_soup.select_one('strong[data-cy="adPageHeaderPrice"]')
+                price = parse_price(price_tag.text) if price_tag else None
+
+                location_tag = offer_soup.select_one('div[data-sentry-component="MapLink"] a')
+                location = location_tag.text.strip() if location_tag else "No location"
+
+                town_name = extract_town_from_location(location)
+                distance_km = get_distance_to_krakow(town_name) or 0.0
+
+                results.append({
+                    'Tytuł': title,
+                    'Lokalizacja': location,
+                    'Cena pierwszego znalezienia': price,
+                    'Data pierwszego znalezienia': today_str,
+                    'Data ostatniej aktualizacji': today_str,
+                    'Cena ostatniej aktualizacji': price,
+                    'Odległość od Krakowa (km)': distance_km,
+                    'Aktywne': True,
+                    'Link': url
+                })
+
+                time.sleep(1)  # małe opóźnienie dla serwera
+
+            except Exception as e:
+                print(f"Error scraping {url}: {e}")
+
     except Exception as e:
         print(f"[{district_name}] Error: {e}")
-    return results
 
+    return results
 # =======================
 # UPDATE EXCEL SHEET
 # =======================
@@ -198,13 +185,16 @@ def update_sheet(results, sheet_name):
             new_rows.append(result)
 
     if new_rows:
-        existing_df = pd.concat([existing_df, pd.DataFrame(new_rows)], ignore_index=True)
+        new_df = pd.DataFrame(new_rows)
+        if not new_df.empty:
+            # Filtrowanie pustych wierszy, aby nie było warningów Pandas
+            new_df = new_df.dropna(how='all')
+            existing_df = pd.concat([existing_df, new_df], ignore_index=True)
 
     existing_links = [r['Link'] for r in results]
     if not existing_df.empty and 'Link' in existing_df.columns:
         existing_df['Aktywne'] = existing_df['Link'].apply(lambda l: l in existing_links)
 
-    # Save to Excel
     if os.path.exists(EXCEL_FILE):
         book = load_workbook(EXCEL_FILE)
         if sheet_name in book.sheetnames:
@@ -227,13 +217,10 @@ def update_sheet(results, sheet_name):
 # =======================
 if __name__ == "__main__":
     create_excel_with_sheets()
-    try:
-        results_krakow = scrape_offers(BASE_LINK_KRAKOW, 'powiat krakowski')
-        update_sheet(results_krakow, 'powiat krakowski')
+    results_krakow = scrape_offers(BASE_LINK_KRAKOW, 'powiat krakowski')
+    update_sheet(results_krakow, 'powiat krakowski')
 
-        results_wielicki = scrape_offers(BASE_LINK_WIELICKI, 'powiat wielicki')
-        update_sheet(results_wielicki, 'powiat wielicki')
+    results_wielicki = scrape_offers(BASE_LINK_WIELICKI, 'powiat wielicki')
+    update_sheet(results_wielicki, 'powiat wielicki')
 
-        print(f"✅ Data saved to '{EXCEL_FILE}' with sheets: powiat krakowski, powiat wielicki")
-    finally:
-        driver.quit()
+    print(f"✅ Data saved to '{EXCEL_FILE}' with sheets: powiat krakowski, powiat wielicki")
