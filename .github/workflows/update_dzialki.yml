@@ -29,9 +29,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install Firefox
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y firefox
+        run: sudo apt-get update && sudo apt-get install -y firefox
+
+      - name: Show Firefox version
+        run: firefox --version
+
+      - name: Show Geckodriver version
+        run: geckodriver --version || echo "geckodriver not found"
 
       - name: Install Python dependencies
         run: |
