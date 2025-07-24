@@ -18,14 +18,16 @@ from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
 from openpyxl.utils import get_column_letter
 from openpyxl import Workbook, load_workbook
+from webdriver_manager.firefox import GeckoDriverManager
 
 # =======================
 # Install missing packages
 # =======================
 def install_missing_packages():
-    required = [
-        "selenium", "pandas", "geopy", "openpyxl"
-    ]
+    """
+    Install required Python packages if they are not already installed.
+    """
+    required = ["selenium", "pandas", "geopy", "openpyxl", "webdriver-manager"]
     for package in required:
         try:
             __import__(package)
@@ -38,37 +40,45 @@ install_missing_packages()
 # Firefox & Geckodriver
 # =======================
 def get_firefox_driver():
+    """
+    Configure Firefox WebDriver.
+    On Windows, expects a local geckodriver.exe.
+    On Linux (e.g., GitHub Actions), uses webdriver-manager to download geckodriver.
+    """
     options = Options()
-    options.add_argument('--headless')
+    options.add_argument('--headless')  # Run in headless mode (no GUI)
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
 
-    system_name = platform.system().lower()
-    if system_name == "windows":
+    if platform.system().lower() == "windows":
+        # Windows configuration
         firefox_binary = r"C:\Program Files\Mozilla Firefox\firefox.exe"
+        options.binary_location = firefox_binary
         geckodriver_path = os.path.join(os.getcwd(), "geckodriver.exe")
         if not os.path.exists(geckodriver_path):
-            raise FileNotFoundError("Brak geckodriver.exe w katalogu projektu.")
-        options.binary_location = firefox_binary
+            raise FileNotFoundError("Missing geckodriver.exe in the project folder.")
         service = Service(executable_path=geckodriver_path)
-        return webdriver.Firefox(service=service, options=options)
     else:
-        # Linux (GitHub Actions)
-        options.binary_location = "/usr/bin/firefox"
-        service = Service("/usr/bin/geckodriver")  # geckodriver w standardowej lokalizacji
-        return webdriver.Firefox(service=service, options=options)
+        # Linux / GitHub Actions
+        service = Service(GeckoDriverManager().install())
+
+    return webdriver.Firefox(service=service, options=options)
 
 driver = get_firefox_driver()
 
 # =======================
-# CONFIG
+# CONFIGURATION
 # =======================
 BASE_LINK_KRAKOW = 'https://www.otodom.pl/pl/wyniki/sprzedaz/dzialka/malopolskie/krakowski?limit=72&priceMax=250000&areaMin=1300&plotType=%5BBUILDING%2CAGRICULTURAL_BUILDING%5D&by=DEFAULT&direction=DESC&mapBounds=19.88207268057927%2C50.13765811720768%2C19.522553426522684%2C49.996078810825225'
 BASE_LINK_WIELICKI = 'https://www.otodom.pl/pl/wyniki/sprzedaz/dzialka/malopolskie/wielicki?distanceRadius=5&limit=72&priceMax=250000&areaMin=1300&plotType=%5BBUILDING%2CAGRICULTURAL_BUILDING%5D&by=DEFAULT&direction=DESC&mapBounds=20.384339742267844%2C50.01972870299939%2C20.25464958097848%2C49.96857906158435'
 
+# Coordinates of Krakow for distance calculation
 KRAKOW_COORDS = (50.0647, 19.9450)
+
+# Excel file where results are saved
 EXCEL_FILE = 'wyniki_ofert_z_filtra.xlsx'
 
+# Excel headers
 HEADERS = [
     'Tytuł',
     'Lokalizacja',
@@ -81,12 +91,16 @@ HEADERS = [
     'Link'
 ]
 
+# Geopy geolocator
 geolocator = Nominatim(user_agent="dzialki_skrypt")
 
 # =======================
-# EXCEL
+# EXCEL HANDLING
 # =======================
 def create_excel_with_sheets():
+    """
+    Create a new Excel file with sheets for Krakow and Wielicki districts if it doesn't exist.
+    """
     if not os.path.exists(EXCEL_FILE):
         wb = Workbook()
         default_sheet = wb.active
@@ -99,17 +113,23 @@ def create_excel_with_sheets():
             for col_idx in range(1, len(HEADERS) + 1):
                 ws.column_dimensions[get_column_letter(col_idx)].width = max(15, len(HEADERS[col_idx-1]) + 2)
         wb.save(EXCEL_FILE)
-        print(f"Utworzono nowy plik Excel: '{EXCEL_FILE}' z arkuszami i nagłówkami.")
+        print(f"Created new Excel file: '{EXCEL_FILE}' with sheets and headers.")
     else:
-        print(f"Plik '{EXCEL_FILE}' już istnieje.")
+        print(f"Excel file '{EXCEL_FILE}' already exists.")
 
 # =======================
-# UTILS
+# UTILITY FUNCTIONS
 # =======================
 def parse_price(price_str):
+    """
+    Parse price string like '250 000 zł' into integer 250000.
+    """
     return int(price_str.replace(' ', '').replace('zł', '').replace('PLN', '').strip())
 
 def extract_town_from_location(location):
+    """
+    Extract town/city name from location string (handles street info).
+    """
     parts = [p.strip() for p in location.split(',')]
     if len(parts) == 1:
         return parts[0]
@@ -123,6 +143,9 @@ def extract_town_from_location(location):
         return parts[0]
 
 def safe_geocode(location, max_retries=3):
+    """
+    Try geocoding a location string, retrying on timeout.
+    """
     for _ in range(max_retries):
         try:
             return geolocator.geocode(location, exactly_one=False)
@@ -131,6 +154,9 @@ def safe_geocode(location, max_retries=3):
     return None
 
 def get_distance_to_krakow(town_name):
+    """
+    Calculate the distance in km from Krakow to a given town.
+    """
     places = safe_geocode(f"{town_name}, Polska")
     if not places:
         print(f"Geocoding error for '{town_name}'")
@@ -143,9 +169,12 @@ def get_distance_to_krakow(town_name):
     return round(min_dist, 2) if min_dist < float('inf') else None
 
 # =======================
-# SCRAPER
+# SCRAPING OFFERS
 # =======================
 def scrape_offers(base_link, district_name):
+    """
+    Scrape real estate offers for a given district from otodom.pl.
+    """
     results = []
     today_str = datetime.date.today().strftime('%Y-%m-%d')
     print(f"Scraping offers for: {district_name}")
@@ -154,6 +183,7 @@ def scrape_offers(base_link, district_name):
         driver.get(base_link)
         time.sleep(5)
 
+        # Different selectors for Krakow vs Wielicki
         if district_name == 'powiat wielicki':
             selector = 'a[href*="/pl/oferta/"]'
         else:
@@ -163,6 +193,7 @@ def scrape_offers(base_link, district_name):
             EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector))
         )
 
+        # Remove duplicates while preserving order
         listing_links_raw = [elem.get_attribute('href') for elem in links_elements]
         listing_links = list(OrderedDict.fromkeys(listing_links_raw))
 
@@ -172,6 +203,7 @@ def scrape_offers(base_link, district_name):
 
         print(f"Found {len(listing_links)} unique offers on the page for {district_name}.")
 
+        # Visit each offer
         for idx, url in enumerate(listing_links, start=1):
             print(f"Fetching offer {idx}/{len(listing_links)}: {url}")
             driver.get(url)
@@ -216,9 +248,12 @@ def scrape_offers(base_link, district_name):
     return results
 
 # =======================
-# EXCEL UPDATE
+# UPDATE EXCEL SHEET
 # =======================
 def update_sheet(results, sheet_name):
+    """
+    Update Excel sheet with new data and mark inactive offers.
+    """
     today_str = datetime.date.today().strftime('%Y-%m-%d')
 
     if os.path.exists(EXCEL_FILE):
@@ -250,6 +285,7 @@ def update_sheet(results, sheet_name):
     if not existing_df.empty and 'Link' in existing_df.columns:
         existing_df['Aktywne'] = existing_df['Link'].apply(lambda l: l in existing_links)
 
+    # Remove old sheet and replace
     if os.path.exists(EXCEL_FILE):
         book = load_workbook(EXCEL_FILE)
         if sheet_name in book.sheetnames:
@@ -270,7 +306,7 @@ def update_sheet(results, sheet_name):
     print(f"Saved {len(existing_df)} offers to sheet '{sheet_name}'")
 
 # =======================
-# MAIN
+# MAIN EXECUTION
 # =======================
 if __name__ == "__main__":
     create_excel_with_sheets()
