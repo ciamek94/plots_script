@@ -45,7 +45,6 @@ def get_firefox_driver():
 
     system_name = platform.system().lower()
     if system_name == "windows":
-        # Ścieżki dla Windowsa
         firefox_binary = r"C:\Program Files\Mozilla Firefox\firefox.exe"
         geckodriver_path = os.path.join(os.getcwd(), "geckodriver.exe")
         if not os.path.exists(geckodriver_path):
@@ -54,8 +53,10 @@ def get_firefox_driver():
         service = Service(executable_path=geckodriver_path)
         return webdriver.Firefox(service=service, options=options)
     else:
-        # Linux (np. GitHub Actions) - zakładamy, że geckodriver jest w PATH
-        return webdriver.Firefox(options=options)
+        # Linux (GitHub Actions)
+        options.binary_location = "/usr/bin/firefox"
+        service = Service("/usr/bin/geckodriver")  # geckodriver w standardowej lokalizacji
+        return webdriver.Firefox(service=service, options=options)
 
 driver = get_firefox_driver()
 
