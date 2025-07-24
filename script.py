@@ -42,26 +42,20 @@ install_missing_packages()
 def get_firefox_driver():
     """
     Configure Firefox WebDriver.
-    On Windows, expects a local geckodriver.exe.
-    On Linux (e.g., GitHub Actions), uses webdriver-manager to download geckodriver.
+    Works on both Windows (local) and Linux (e.g., GitHub Actions).
     """
     options = Options()
     options.add_argument('--headless')  # Run in headless mode (no GUI)
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
 
+    # Windows: specify Firefox binary path
     if platform.system().lower() == "windows":
-        # Windows configuration
         firefox_binary = r"C:\Program Files\Mozilla Firefox\firefox.exe"
         options.binary_location = firefox_binary
-        geckodriver_path = os.path.join(os.getcwd(), "geckodriver.exe")
-        if not os.path.exists(geckodriver_path):
-            raise FileNotFoundError("Missing geckodriver.exe in the project folder.")
-        service = Service(executable_path=geckodriver_path)
-    else:
-        # Linux / GitHub Actions
-        service = Service(GeckoDriverManager().install())
 
+    # Use webdriver-manager for both Windows and Linux
+    service = Service(GeckoDriverManager().install())
     return webdriver.Firefox(service=service, options=options)
 
 driver = get_firefox_driver()

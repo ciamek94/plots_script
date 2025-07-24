@@ -5,29 +5,33 @@ on:
   schedule:
     - cron: '0 7 * * *'     # Codziennie o 07:00 UTC (09:00 w Polsce)
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+
+      - name: Set up Git
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install Firefox and Geckodriver
+      - name: Install Firefox
         run: |
           sudo apt-get update
           sudo apt-get install -y firefox
-          GECKO_VERSION=$(curl -s https://api.github.com/repos/mozilla/geckodriver/releases/latest | grep "tag_name" | cut -d '"' -f 4)
-          wget https://github.com/mozilla/geckodriver/releases/download/$GECKO_VERSION/geckodriver-$GECKO_VERSION-linux64.tar.gz
-          tar -xzf geckodriver-$GECKO_VERSION-linux64.tar.gz
-          sudo mv geckodriver /usr/bin/
 
       - name: Install Python dependencies
         run: |
@@ -35,12 +39,11 @@ jobs:
           pip install selenium pandas geopy openpyxl webdriver-manager
 
       - name: Run Selenium scraper
-        run: python script.py   # <-- zmień na nazwę Twojego skryptu, np. main.py
+        run: python script.py  # <-- nazwa pliku
 
       - name: Commit and push Excel file
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add wyniki_ofert_z_filtra.xlsx
-          git commit -m "Automatyczna aktualizacja Excela [$(date +'%Y-%m-%d %H:%M:%S')]" || echo "Brak zmian do commitowania"
-          git push
+          git add wyniki_ofert_z_filtra.xlsx || true
+          git commit -m "Automatyczna aktualizacja Excela [$(date '+%Y-%m-%d %H:%M:%S')]" || echo "Brak zmian do commitowania"
+          git pull --rebase origin main
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
