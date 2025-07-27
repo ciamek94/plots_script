@@ -1,53 +1,61 @@
 name: Run Selenium Scraper
 
 on:
-  workflow_dispatch:        # Ręczne uruchomienie
+  workflow_dispatch:        # Manual trigger
   schedule:
-    - cron: '0 7 * * *'     # Codziennie o 07:00 UTC (09:00 w Polsce)
+    - cron: '0 7 * * *'     # Run daily at 07:00 UTC (09:00 in Poland)
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest   # Use the latest Ubuntu runner
 
     steps:
+      # Step 1: Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
+      # Step 2: Configure Git
       - name: Set up Git
         run: |
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
 
+      # Step 3: Install Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install Firefox
-        run: sudo apt-get update && sudo apt-get install -y firefox
+      # Step 4: Install Google Chrome
+      - name: Install Google Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
 
-      - name: Show Firefox version
-        run: firefox --version
+      # Step 5: Show Chrome version (for debugging)
+      - name: Show Chrome version
+        run: google-chrome --version
 
+      # Step 6: Install Python dependencies
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install selenium pandas geopy openpyxl
+          pip install selenium pandas geopy openpyxl beautifulsoup4
           pip install webdriver-manager==4.0.2
 
+      # Step 7: Run the Selenium scraper
       - name: Run Selenium scraper
-        env:
-          WDM_FIREFOX_VERSION: v0.34.0
-        run: python script.py  # <-- nazwa pliku
+        run: python script.py  # <-- script filename
 
+      # Step 8: Commit & push updated Excel file
       - name: Pull, commit and push Excel file
         run: |
           git pull --rebase origin main || true
           git add wyniki_ofert_z_filtra.xlsx || true
-          git commit -m "Automatyczna aktualizacja Excela [$(date '+%Y-%m-%d %H:%M:%S')]" || echo "Brak zmian do commitowania"
+          git commit -m "Automatyczna aktualizacja Excela [$(date '+%Y-%m-%d %H:%M:%S')]" || echo "No changes to commit"
           git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
