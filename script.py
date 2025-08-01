@@ -10,17 +10,27 @@ from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
+# -------------------------------
+# 🔧 Uncomment the following 2 lines locally to enable loading variables from the .env file
 # from dotenv import load_dotenv
 # load_dotenv()
+
+# -------------------------------
+# 🔐 Environment variables required in .env:
+# ONEDRIVE_CLIENT_ID=your_client_id
+# ONEDRIVE_REFRESH_TOKEN=your_refresh_token
+# 
+# NOTE: The .env file is not pushed to GitHub — add these values to GitHub Secrets as well
+# if you want to run the script automatically via GitHub Actions.
+# -------------------------------
 
 # -------------------------------
 # OneDrive Configuration
 # -------------------------------
 CLIENT_ID = os.environ['ONEDRIVE_CLIENT_ID']
-TENANT_ID = os.environ['ONEDRIVE_TENANT_ID']
-CLIENT_SECRET = os.environ['ONEDRIVE_CLIENT_SECRET']
+REFRESH_TOKEN = os.environ['ONEDRIVE_REFRESH_TOKEN']
 SCOPES = ['offline_access', 'Files.ReadWrite.All']
-TOKEN_URL = f'https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token'
+TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
 
 # -------------------------------
 # App Configuration
@@ -39,25 +49,23 @@ HEADERS = [
 geolocator = Nominatim(user_agent="dzialki_skrypt")
 
 # -------------------------------
-# OneDrive Auth (Client Credentials Flow)
+# OneDrive Auth (Refresh Token Flow)
 # -------------------------------
 def authenticate():
     data = {
         'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET,
-        'scope': 'https://graph.microsoft.com/.default',
-        'grant_type': 'client_credentials'
+        'refresh_token': REFRESH_TOKEN,
+        'grant_type': 'refresh_token',
+        'scope': 'offline_access Files.ReadWrite.All',
     }
-
     resp = requests.post(TOKEN_URL, data=data)
     if resp.status_code != 200:
         raise Exception(f"❌ Failed to authenticate: {resp.text}")
-
     return resp.json()
 
-# 🔁 ZAMIENIAMY `/me/drive/...` na `/users/{user_id}/drive/...`
-USER_ID = os.environ['ONEDRIVE_USER_ID']  # Dodaj do GitHub secrets lub .env
-
+# -------------------------------
+# OneDrive Upload
+# -------------------------------
 def upload_to_onedrive(file_path, token):
     headers = {
         'Authorization': f"Bearer {token['access_token']}",
@@ -66,20 +74,12 @@ def upload_to_onedrive(file_path, token):
     with open(file_path, 'rb') as f:
         file_data = f.read()
 
-    upload_url = f'https://graph.microsoft.com/v1.0/users/{USER_ID}/drive/root:/{file_path}:/content'
+    upload_url = f'https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}:/content'
     r = requests.put(upload_url, headers=headers, data=file_data)
     if r.status_code in (200, 201):
         print(f"✅ File uploaded to OneDrive: {file_path}")
     else:
         print(f"❌ Upload failed: {r.status_code} {r.text}")
-
-def get_drive_id(token):
-    headers = {'Authorization': f"Bearer {token['access_token']}"}
-    r = requests.get("https://graph.microsoft.com/v1.0/drives", headers=headers)
-    drives = r.json().get('value', [])
-    if not drives:
-        raise Exception("❌ No OneDrive drives found")
-    return drives[0]['id']  # or choose by name if needed
 
 # -------------------------------
 # Excel Functions
