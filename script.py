@@ -12,8 +12,8 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 # -------------------------------
 # 🔧 Uncomment the following 2 lines locally to enable loading variables from the .env file
-from dotenv import load_dotenv
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 # -------------------------------
 # 🔐 Environment variables required in .env:
@@ -38,7 +38,9 @@ TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
 BASE_LINK_KRAKOW = 'https://www.otodom.pl/pl/wyniki/sprzedaz/dzialka/malopolskie/krakowski?limit=72&priceMax=250000&areaMin=1300&plotType=%5BBUILDING%2CAGRICULTURAL_BUILDING%5D&by=DEFAULT&direction=DESC'
 BASE_LINK_WIELICKI = 'https://www.otodom.pl/pl/wyniki/sprzedaz/dzialka/malopolskie/wielicki?distanceRadius=5&limit=72&priceMax=250000&areaMin=1300&plotType=%5BBUILDING%2CAGRICULTURAL_BUILDING%5D&by=DEFAULT&direction=DESC'
 KRAKOW_COORDS = (50.0647, 19.9450)
-EXCEL_FILE = 'wyniki_ofert_z_filtra.xlsx'
+EXCEL_FOLDER = 'dzialki'
+EXCEL_FILENAME = 'wyniki_ofert_z_filtra.xlsx'
+EXCEL_FILE = os.path.join(EXCEL_FOLDER, EXCEL_FILENAME)
 SHEET_NAMES = ['powiat krakowski', 'powiat wielicki']
 HEADERS = [
     'Tytuł', 'Lokalizacja', 'Cena pierwszego znalezienia',
@@ -86,6 +88,9 @@ def upload_to_onedrive(file_path, token):
 # Excel Functions
 # -------------------------------
 def create_excel_with_sheets():
+    if not os.path.exists(EXCEL_FOLDER):
+        os.makedirs(EXCEL_FOLDER)
+
     if not os.path.exists(EXCEL_FILE):
         wb = Workbook()
         wb.remove(wb.active)
@@ -96,7 +101,6 @@ def create_excel_with_sheets():
                 ws.column_dimensions[get_column_letter(i)].width = max(15, len(col) + 2)
         wb.save(EXCEL_FILE)
         print(f"📄 Created Excel: {EXCEL_FILE}")
-
 # -------------------------------
 # Scraping & Utils
 # -------------------------------
