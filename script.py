@@ -12,8 +12,8 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 # -------------------------------
 # 🔧 Uncomment the following 2 lines locally to enable loading variables from the .env file
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 # -------------------------------
 # 🔐 Environment variables required in .env:
@@ -198,8 +198,15 @@ def update_sheet(results, sheet_name):
     with pd.ExcelWriter(EXCEL_FILE, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
         df_old.to_excel(writer, sheet_name=sheet_name, index=False)
         ws = writer.sheets[sheet_name]
+
+        # Dopasowanie szerokości kolumn do zawartości
         for i, col in enumerate(df_old.columns, 1):
-            ws.column_dimensions[get_column_letter(i)].width = max(len(col), 20)
+            max_length = max(
+                df_old[col].astype(str).map(len).max(),
+                len(col)
+            )
+            adjusted_width = max_length + 2  # margines
+            ws.column_dimensions[get_column_letter(i)].width = adjusted_width
 
     print(f"✅ Saved {len(df_old)} offers to '{sheet_name}'")
 
