@@ -1,3 +1,4 @@
 # Ignore environment variable files
 .env
-wyniki_ofert_z_filtra.xlsx
+*.log
+*.xlsx
