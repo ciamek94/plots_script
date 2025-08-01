@@ -12,8 +12,8 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 # -------------------------------
 # 🔧 Uncomment the following 2 lines locally to enable loading variables from the .env file
-from dotenv import load_dotenv
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 # -------------------------------
 # 🔐 Environment variables required in .env:
