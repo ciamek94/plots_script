@@ -12,8 +12,8 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 # -------------------------------
 # 🔧 Uncomment the following 2 lines locally to enable loading variables from the .env file
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 # -------------------------------
 # 🔐 Environment variables required in .env:
@@ -47,6 +47,7 @@ HEADERS = [
     'Aktywne', 'Link'
 ]
 geolocator = Nominatim(user_agent="dzialki_skrypt")
+max_distance_from_Krakow = 40 #km
 
 # -------------------------------
 # OneDrive Auth (Refresh Token Flow)
@@ -102,8 +103,12 @@ def create_excel_with_sheets():
 def parse_price(price_str):
     return int(price_str.replace(' ', '').replace('zł', '').replace('PLN', '').replace(',', '').strip())
 
-def extract_town_from_location(location):
-    return location.split(',')[-1].strip() if ',' in location else location
+def extract_relevant_town(location):
+    parts = [part.strip() for part in location.split(',')]
+    if parts[0].lower().startswith("ul.") and len(parts) > 1:
+        return parts[1]
+    else:
+        return parts[0]
 
 def safe_geocode(loc):
     for _ in range(3):
@@ -113,12 +118,19 @@ def safe_geocode(loc):
             time.sleep(1)
     return None
 
-def get_distance_to_krakow(town):
+def get_distance_to_krakow(location_string):
+    town = extract_relevant_town(location_string)
     query = f"{town}, małopolskie, Polska"
     places = safe_geocode(query)
     if not places:
         return None
-    return round(min([geodesic(KRAKOW_COORDS, (p.latitude, p.longitude)).km for p in places if p and hasattr(p, 'point')]), 2)
+    distances = [
+        geodesic(KRAKOW_COORDS, (p.latitude, p.longitude)).km
+        for p in places if hasattr(p, 'latitude') and hasattr(p, 'longitude')
+    ]
+    if not distances:
+        return None
+    return round(min([d for d in distances if d < max_distance_from_Krakow] or [distances[0]]), 2)
 
 HEADERS_HTTP = {
     "User-Agent": "Mozilla/5.0",
@@ -145,7 +157,7 @@ def scrape_offers(base_link, name):
                 title = s.find('h1').text.strip() if s.find('h1') else 'No title'
                 price = parse_price(s.select_one('strong[data-cy="adPageHeaderPrice"]').text)
                 location = s.select_one('div[data-sentry-component="MapLink"] a').text.strip()
-                town = extract_town_from_location(location)
+                town = extract_relevant_town(location)
                 distance = get_distance_to_krakow(town) or 0.0
 
                 results.append({
