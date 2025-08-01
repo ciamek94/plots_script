@@ -159,7 +159,7 @@ def scrape_offers(base_link, name):
                     'Aktywne': True,
                     'Link': url
                 })
-                time.sleep(1)
+                time.sleep(2)
             except Exception as e:
                 print(f"❌ Skipping offer: {e}")
     except Exception as e:
