@@ -10,6 +10,8 @@ from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
+# from dotenv import load_dotenv
+# load_dotenv()
 
 # -------------------------------
 # OneDrive Configuration
@@ -37,10 +39,9 @@ HEADERS = [
 geolocator = Nominatim(user_agent="dzialki_skrypt")
 
 # -------------------------------
-# OneDrive Auth
+# OneDrive Auth (Client Credentials Flow)
 # -------------------------------
 def authenticate():
-    token_url = f'https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token'
     data = {
         'client_id': CLIENT_ID,
         'client_secret': CLIENT_SECRET,
@@ -48,11 +49,29 @@ def authenticate():
         'grant_type': 'client_credentials'
     }
 
-    resp = requests.post(token_url, data=data)
+    resp = requests.post(TOKEN_URL, data=data)
     if resp.status_code != 200:
         raise Exception(f"❌ Failed to authenticate: {resp.text}")
 
     return resp.json()
+
+# 🔁 ZAMIENIAMY `/me/drive/...` na `/users/{user_id}/drive/...`
+USER_ID = os.environ['ONEDRIVE_USER_ID']  # Dodaj do GitHub secrets lub .env
+
+def upload_to_onedrive(file_path, token):
+    headers = {
+        'Authorization': f"Bearer {token['access_token']}",
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    }
+    with open(file_path, 'rb') as f:
+        file_data = f.read()
+
+    upload_url = f'https://graph.microsoft.com/v1.0/users/{USER_ID}/drive/root:/{file_path}:/content'
+    r = requests.put(upload_url, headers=headers, data=file_data)
+    if r.status_code in (200, 201):
+        print(f"✅ File uploaded to OneDrive: {file_path}")
+    else:
+        print(f"❌ Upload failed: {r.status_code} {r.text}")
 
 def get_drive_id(token):
     headers = {'Authorization': f"Bearer {token['access_token']}"}
@@ -61,22 +80,6 @@ def get_drive_id(token):
     if not drives:
         raise Exception("❌ No OneDrive drives found")
     return drives[0]['id']  # or choose by name if needed
-
-def upload_to_onedrive(file_path, token):
-    drive_id = get_drive_id(token)
-    headers = {
-        'Authorization': f"Bearer {token['access_token']}",
-        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    }
-    with open(file_path, 'rb') as f:
-        file_data = f.read()
-
-    upload_url = f'https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{file_path}:/content'
-    r = requests.put(upload_url, headers=headers, data=file_data)
-    if r.status_code in (200, 201):
-        print(f"✅ File uploaded to OneDrive: {file_path}")
-    else:
-        print(f"❌ Upload failed: {r.status_code} {r.text}")
 
 # -------------------------------
 # Excel Functions
