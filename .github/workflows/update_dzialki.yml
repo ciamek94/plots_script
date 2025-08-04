@@ -24,7 +24,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install selenium pandas geopy openpyxl beautifulsoup4 requests webdriver-manager python-dotenv
+          pip install selenium pandas geopy openpyxl beautifulsoup4 requests webdriver-manager python-dotenv folium
 
       - name: Run scraper
         env:
