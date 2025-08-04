@@ -14,8 +14,8 @@ from openpyxl.utils import get_column_letter
 import folium
 # -------------------------------
 # 🔧 Uncomment the following 2 lines locally to enable loading variables from the .env file
-from dotenv import load_dotenv
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 # -------------------------------
 # 🔐 Environment variables required in .env:
@@ -43,16 +43,16 @@ EXCEL_FILENAME = 'wyniki_ofert_z_filtra.xlsx'
 EXCEL_FILE = os.path.join(EXCEL_FOLDER, EXCEL_FILENAME)
 SHEET_NAMES = ['powiat krakowski', 'powiat wielicki']
 HEADERS = [
-    'Tytuł', 'Lokalizacja', 'Cena pierwszego znalezienia',
-    'Data pierwszego znalezienia', 'Data ostatniej aktualizacji',
-    'Cena ostatniej aktualizacji', 'Odległość od Krakowa (km)',
-    'Aktywne', 'Link'
+    'Title', 'Location', 'Price at first find',
+    'Date first found', 'Date last updated',
+    'Price last updated', 'Distance from Krakow (km)',
+    'Active', 'Link'
 ]
 
 # Allowed counties around Krakow for better geocoding accuracy
 ALLOWED_COUNTIES = ['krakowski', 'wielicki', 'wadowicki', 'chrzanowski', 'olkuski', 'myślenicki']
 
-geolocator = Nominatim(user_agent="dzialki_skrypt")
+geolocator = Nominatim(user_agent="plot_script")
 max_distance_from_Krakow = 40
 
 
@@ -105,7 +105,7 @@ def create_excel_with_sheets():
                 ws.cell(row=1, column=i, value=col)
                 ws.column_dimensions[get_column_letter(i)].width = max(15, len(col) + 2)
         wb.save(EXCEL_FILE)
-        print(f"📄 Created Excel: {EXCEL_FILE}")
+        print(f"📄 Created Excel file: {EXCEL_FILE}")
 
 # -------------------------------
 # 🔍 Utility functions
@@ -125,7 +125,7 @@ def safe_geocode(loc: str, max_retries: int = 2, timeout: int = 5):
         try:
             return geolocator.geocode(loc, exactly_one=False, timeout=timeout)
         except (GeocoderUnavailable, GeocoderServiceError, ConnectionError, ReadTimeout) as e:
-            print(f"⏳ Geocoding wrong ({attempt + 1}/{max_retries}): {loc} -> {e}")
+            print(f"⏳ Geocoding failed ({attempt + 1}/{max_retries}): {loc} -> {e}")
             time.sleep(1)
     return None
 
@@ -163,10 +163,10 @@ def scrape_offers(base_link, name):
             'https://www.otodom.pl' + a['href'] if a['href'].startswith('/') else a['href']
             for a in soup.select('a[data-cy="listing-item-link"]') if a.get('href')
         ]))
-        print(f"🔍 {name}: {len(links)} offers")
+        print(f"🔍 {name}: {len(links)} offers found")
 
         for idx, url in enumerate(links, 1):
-            print(f"➡️ {idx}/{len(links)}: {url}")
+            print(f"➡️ Processing {idx}/{len(links)}: {url}")
             try:
                 o = requests.get(url, headers=HEADERS_HTTP, timeout=30)
                 s = BeautifulSoup(o.text, "html.parser")
@@ -177,21 +177,21 @@ def scrape_offers(base_link, name):
                 distance = get_distance_to_krakow(town, county) or 0.0
 
                 results.append({
-                    'Tytuł': title,
-                    'Lokalizacja': location,
-                    'Cena pierwszego znalezienia': price,
-                    'Data pierwszego znalezienia': today,
-                    'Data ostatniej aktualizacji': today,
-                    'Cena ostatniej aktualizacji': price,
-                    'Odległość od Krakowa (km)': distance,
-                    'Aktywne': True,
+                    'Title': title,
+                    'Location': location,
+                    'Price at first find': price,
+                    'Date first found': today,
+                    'Date last updated': today,
+                    'Price last updated': price,
+                    'Distance from Krakow (km)': distance,
+                    'Active': True,
                     'Link': url
                 })
                 time.sleep(2)
             except Exception as e:
-                print(f"❌ Skipping offer: {e}")
+                print(f"❌ Skipping offer due to error: {e}")
     except Exception as e:
-        print(f"❌ Scrape error: {e}")
+        print(f"❌ Scraping error: {e}")
     return results
 
 # -------------------------------
@@ -208,17 +208,17 @@ def update_sheet(results, sheet_name):
         df_old = pd.DataFrame(columns=HEADERS)
 
     for r in results:
-        match = df_old[(df_old['Tytuł'] == r['Tytuł']) & (df_old['Cena ostatniej aktualizacji'] == r['Cena ostatniej aktualizacji'])]
+        match = df_old[(df_old['Title'] == r['Title']) & (df_old['Price last updated'] == r['Price last updated'])]
         if not match.empty:
             i = match.index[0]
-            df_old.at[i, 'Data ostatniej aktualizacji'] = today
-            df_old.at[i, 'Aktywne'] = True
+            df_old.at[i, 'Date last updated'] = today
+            df_old.at[i, 'Active'] = True
         else:
             df_old = pd.concat([df_old, pd.DataFrame([r])], ignore_index=True)
 
     existing_links = [r['Link'] for r in results]
     if 'Link' in df_old.columns:
-        df_old['Aktywne'] = df_old['Link'].apply(lambda x: x in existing_links)
+        df_old['Active'] = df_old['Link'].apply(lambda x: x in existing_links)
 
     wb = load_workbook(EXCEL_FILE)
     if sheet_name in wb.sheetnames:
@@ -238,7 +238,7 @@ def update_sheet(results, sheet_name):
             adjusted_width = max_length + 2
             ws.column_dimensions[get_column_letter(i)].width = adjusted_width
 
-    print(f"✅ Saved {len(df_old)} offers to '{sheet_name}'")
+    print(f"✅ Saved {len(df_old)} offers to sheet '{sheet_name}'")
 
 # -------------------------------
 # 🗺️ Generate map from Excel data
@@ -261,10 +261,10 @@ def generate_map():
     valid_counties = [name.replace("powiat ", "") for name in SHEET_NAMES]
 
     for _, row in df_combined.iterrows():
-        if not row.get('Aktywne', False):
+        if not row.get('Active', False):
             continue
 
-        location_string = row.get('Lokalizacja', '')
+        location_string = row.get('Location', '')
         if not isinstance(location_string, str) or location_string.strip() == '':
             continue
 
@@ -272,11 +272,11 @@ def generate_map():
         county = row['sheet_name'].replace("powiat ", "")
         geocode_attempts = []
 
-        # 1. Próbuj z powiatem jeśli należy do listy valid_counties
+        # 1. Try with county if in valid_counties list
         if county in valid_counties:
             geocode_attempts.append(f"{town}, powiat {county}, małopolskie, Polska")
 
-        # 2. Potem bez powiatu (fallback)
+        # 2. Fallback without county
         geocode_attempts.append(f"{town}, małopolskie, Polska")
 
         coordinates_found = False
@@ -285,7 +285,7 @@ def generate_map():
             if not geocode_result:
                 continue
 
-            # Sortujemy lokalizacje po odległości do Krakowa
+            # Sort locations by distance to Krakow
             places_with_distance = []
             for place in geocode_result:
                 lat, lon = place.latitude, place.longitude
@@ -299,22 +299,22 @@ def generate_map():
                     folium.Marker(
                         location=[lat, lon],
                         popup=folium.Popup(
-                            f"<b>{row['Tytuł']}</b><br>{location_string}<br>{row['Cena ostatniej aktualizacji']} zł<br><a href='{row['Link']}' target='_blank'>See listing</a>",
+                            f"<b>{row['Title']}</b><br>{location_string}<br>{row['Price last updated']} PLN<br><a href='{row['Link']}' target='_blank'>See listing</a>",
                             max_width=300
                         ),
-                        tooltip=row['Tytuł'],
+                        tooltip=row['Title'],
                         icon=folium.Icon(color="green", icon="home", prefix="fa")
                     ).add_to(m)
 
                     marker_count += 1
                     added_markers.append({
-                        "Tytuł": row['Tytuł'],
-                        "Lokalizacja": location_string,
+                        "Title": row['Title'],
+                        "Location": location_string,
                         "Lat": lat,
                         "Lon": lon,
-                        "Odległość": round(distance, 2)
+                        "Distance (km)": round(distance, 2)
                     })
-                    print(f"📍 Added pin: {row['Tytuł']} - {lat}, {lon} (distance: {distance:.2f} km)")
+                    print(f"📍 Added marker: {row['Title']} - {lat}, {lon} (distance: {distance:.2f} km)")
                     coordinates_found = True
                     break
 
@@ -324,21 +324,23 @@ def generate_map():
         if not coordinates_found:
             print(f"⚠️ No coordinates found for: {town} ({county})")
 
-    print(f"📍 Added total {marker_count} pins on the map")
+    print(f"📍 Added total {marker_count} markers on the map")
 
-    # Zapisujemy listę dodanych pinezek do CSV
+    # Save list of added markers to CSV
     if added_markers:
-        csv_path = os.path.join(EXCEL_FOLDER, "added_pins.csv")
+        csv_path = os.path.join(EXCEL_FOLDER, "added_markers.csv")
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=added_markers[0].keys())
             writer.writeheader()
             writer.writerows(added_markers)
-        print(f"✅ Saved list of added pins to '{csv_path}'")
+        print(f"✅ Saved list of added markers to '{csv_path}'")
 
-    # Zapisz mapę do pliku HTML
+    # Save map to HTML file
     map_file = os.path.join(EXCEL_FOLDER, "map_of_offers.html")
     m.save(map_file)
     print(f"🗺️ Map saved: {map_file}")
+
+    return map_file
 
 # -------------------------------
 # 🚀 MAIN SCRIPT ENTRY POINT
@@ -347,7 +349,9 @@ if __name__ == "__main__":
     create_excel_with_sheets()
     update_sheet(scrape_offers(BASE_LINK_KRAKOW, 'powiat krakowski'), 'powiat krakowski')
     update_sheet(scrape_offers(BASE_LINK_WIELICKI, 'powiat wielicki'), 'powiat wielicki')
-    generate_map()
-    print(f"📦 Done. Uploading {EXCEL_FILE} to OneDrive...")
+    map_path = generate_map()
+    
+    print(f"📦 Done. Uploading {EXCEL_FILE} and map to OneDrive...")
     token = authenticate()
     upload_to_onedrive(EXCEL_FILE, token)
+    upload_to_onedrive(map_path, token)
