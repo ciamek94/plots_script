@@ -14,8 +14,8 @@ from openpyxl.utils import get_column_letter
 import folium
 # -------------------------------
 # 🔧 Uncomment the following 2 lines locally to enable loading variables from the .env file
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 # -------------------------------
 # 🔐 Environment variables required in .env:
@@ -254,13 +254,13 @@ def update_sheet(results, sheet_name):
 
 # -------------------------------
 # 🗺️ Generate map from Excel data
-
 def generate_map():
     import csv
 
+    # Initialize the map centered around Krakow
     m = folium.Map(location=KRAKOW_COORDS, zoom_start=10)
 
-    # 🔵 Add Kraków marker
+    # Add reference marker for Krakow
     folium.Marker(
         location=KRAKOW_COORDS,
         popup=folium.Popup("<b>Kraków</b><br>Punkt odniesienia", max_width=200),
@@ -270,6 +270,7 @@ def generate_map():
 
     df_combined = pd.DataFrame()
 
+    # Read data from all Excel sheets
     for sheet_name in SHEET_NAMES:
         if os.path.exists(EXCEL_FILE):
             df = pd.read_excel(EXCEL_FILE, sheet_name=sheet_name)
@@ -277,27 +278,28 @@ def generate_map():
             df_combined = pd.concat([df_combined, df], ignore_index=True)
 
     marker_count = 0
-    added_markers = []
-
+    location_to_listings = {}
     valid_counties = [name.replace("powiat ", "") for name in SHEET_NAMES]
 
-    for _, row in df_combined.iterrows():
+    # Iterate through each row (offer) in the Excel sheets
+    for index, row in df_combined.iterrows():
         if not row.get('Active', False):
             continue
 
         location_string = row.get('Location', '')
         if not isinstance(location_string, str) or location_string.strip() == '':
+            print(f"⚠️ Skipped: missing location (row {index})")
             continue
 
         town = extract_relevant_town(location_string)
         county = row['sheet_name'].replace("powiat ", "")
         geocode_attempts = []
 
-        # 1. Try with county if in valid_counties list
+        # First, try with the county if it's valid
         if county in valid_counties:
             geocode_attempts.append(f"{town}, powiat {county}, małopolskie, Polska")
 
-        # 2. Fallback without county
+        # Fallback: try without the county
         geocode_attempts.append(f"{town}, małopolskie, Polska")
 
         coordinates_found = False
@@ -306,36 +308,32 @@ def generate_map():
             if not geocode_result:
                 continue
 
-            # Sort locations by distance to Krakow
+            # Calculate distances from Krakow for each geocode result
             places_with_distance = []
             for place in geocode_result:
                 lat, lon = place.latitude, place.longitude
                 distance = geodesic(KRAKOW_COORDS, (lat, lon)).km
                 places_with_distance.append((distance, lat, lon))
 
+            # Sort by distance
             places_with_distance.sort(key=lambda x: x[0])
 
+            # Try placing a marker if within range
             for distance, lat, lon in places_with_distance:
                 if distance < max_distance_from_Krakow:
-                    folium.Marker(
-                        location=[lat, lon],
-                        popup=folium.Popup(
-                            f"<b>{row['Title']}</b><br>{location_string}<br>{row['Price last updated']} PLN<br><a href='{row['Link']}' target='_blank'>See listing</a>",
-                            max_width=300
-                        ),
-                        tooltip=row['Title'],
-                        icon=folium.Icon(color="green", icon="home", prefix="fa")
-                    ).add_to(m)
+                    coord_key = (round(lat, 5), round(lon, 5))
 
-                    marker_count += 1
-                    added_markers.append({
+                    if coord_key not in location_to_listings:
+                        location_to_listings[coord_key] = []
+
+                    location_to_listings[coord_key].append({
                         "Title": row['Title'],
                         "Location": location_string,
-                        "Lat": lat,
-                        "Lon": lon,
-                        "Distance (km)": round(distance, 2)
+                        "Price": row['Price last updated'],
+                        "Link": row['Link'],
+                        "Distance": round(distance, 2)
                     })
-                    print(f"📍 Added marker: {row['Title']} - {lat}, {lon} (distance: {distance:.2f} km)")
+
                     coordinates_found = True
                     break
 
@@ -343,23 +341,51 @@ def generate_map():
                 break
 
         if not coordinates_found:
-            print(f"⚠️ No coordinates found for: {town} ({county})")
+            print(f"⚠️ No coordinates found for: {town} ({county}) – offer NOT added to map")
+        else:
+            print(f"✔️ Geolocation successful: {row['Title']} | {location_string}")
 
-    print(f"📍 Added total {marker_count} markers on the map")
+    # Add markers to the map from grouped listings
+    added_markers = []
+    for (lat, lon), listings in location_to_listings.items():
+        popup_html = ""
+        for offer in listings:
+            popup_html += f"<b>{offer['Title']}</b><br>{offer['Location']}<br>{offer['Price']} PLN<br><a href='{offer['Link']}' target='_blank'>Zobacz ogłoszenie</a><hr>"
 
-    # Save list of added markers to CSV
+        folium.Marker(
+            location=[lat, lon],
+            popup=folium.Popup(popup_html, max_width=300),
+            tooltip=f"{len(listings)} ogłoszeń",
+            icon=folium.Icon(color="green", icon="home", prefix="fa")
+        ).add_to(m)
+
+        added_markers.append({
+            "Titles": "; ".join([o["Title"] for o in listings]),
+            "Location": listings[0]['Location'],
+            "Lat": lat,
+            "Lon": lon,
+            "Distance (km)": listings[0]['Distance'],
+            "Count": len(listings)
+        })
+
+        print(f"✅ Marker added: {len(listings)} offer(s) at {listings[0]['Location']} → ({lat}, {lon})")
+        marker_count += 1
+
+    print(f"📍 Total markers added: {marker_count}")
+
+    # Save list of added markers to CSV file
     if added_markers:
         csv_path = os.path.join(EXCEL_FOLDER, "added_markers.csv")
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=added_markers[0].keys())
             writer.writeheader()
             writer.writerows(added_markers)
-        print(f"✅ Saved list of added markers to '{csv_path}'")
+        print(f"✅ CSV saved: {csv_path}")
 
-    # Save map to HTML file
+    # Save final map to HTML file
     map_file = os.path.join(EXCEL_FOLDER, "map_of_offers.html")
     m.save(map_file)
-    print(f"🗺️ Map saved: {map_file}")
+    print(f"🗺️ Map saved to file: {map_file}")
 
     return map_file
 
