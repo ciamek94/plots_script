@@ -53,7 +53,7 @@ HEADERS = [
 ALLOWED_COUNTIES = ['krakowski', 'wielicki', 'wadowicki', 'chrzanowski', 'olkuski', 'myślenicki']
 
 geolocator = Nominatim(user_agent="plot_script")
-max_distance_from_Krakow = 40
+max_distance_from_Krakow = 50
 
 
 # -------------------------------
@@ -130,20 +130,29 @@ def safe_geocode(loc: str, max_retries: int = 2, timeout: int = 5):
     return None
 
 def get_distance_to_krakow(town, county=""):
-    if county:
-        query = f"{town}, powiat {county}, małopolskie, Polska"
-    else:
-        query = f"{town}, małopolskie, Polska"
-    places = safe_geocode(query)
-    if not places:
-        return None
-    distances = [
-        geodesic(KRAKOW_COORDS, (p.latitude, p.longitude)).km
-        for p in places if hasattr(p, 'latitude') and hasattr(p, 'longitude')
-    ]
-    if not distances:
-        return None
-    return round(min([d for d in distances if d < max_distance_from_Krakow] or [distances[0]]), 2)
+    allowed_counties = ALLOWED_COUNTIES
+    queries = []
+
+    # Step 1: Try with county if it's in allowed list
+    if county and county.lower() in allowed_counties:
+        queries.append(f"{town}, powiat {county}, małopolskie, Polska")
+
+    # Step 2: Try without county
+    queries.append(f"{town}, małopolskie, Polska")
+
+    for query in queries:
+        places = safe_geocode(query)
+        if places:
+            distances = [
+                geodesic(KRAKOW_COORDS, (p.latitude, p.longitude)).km
+                for p in places if hasattr(p, 'latitude') and hasattr(p, 'longitude')
+            ]
+            if distances:
+                valid_distances = [d for d in distances if d < max_distance_from_Krakow]
+                return round(min(valid_distances or distances), 2)
+
+    print(f"⚠️ Nie znaleziono lokalizacji: {town} ({county}) – ustawiam jako -1 km")
+    return -1.0  # Use -1.0 to mark it clearly as 'not found'
 
 # -------------------------------
 # 🧲 Scrape offers from Otodom
@@ -174,7 +183,10 @@ def scrape_offers(base_link, name):
                 price = parse_price(s.select_one('strong[data-cy="adPageHeaderPrice"]').text)
                 location = s.select_one('div[data-sentry-component="MapLink"] a').text.strip()
                 town = extract_relevant_town(location)
-                distance = get_distance_to_krakow(town, county) or 0.0
+                distance = get_distance_to_krakow(town, county)
+                if distance is None:
+                    print(f"⚠️ Nie znaleziono lokalizacji: {town} ({county}) – ustawiam jako -1 km")
+                    distance = -1.0
 
                 results.append({
                     'Title': title,
@@ -247,6 +259,15 @@ def generate_map():
     import csv
 
     m = folium.Map(location=KRAKOW_COORDS, zoom_start=10)
+
+    # 🔵 Add Kraków marker
+    folium.Marker(
+        location=KRAKOW_COORDS,
+        popup=folium.Popup("<b>Kraków</b><br>Punkt odniesienia", max_width=200),
+        tooltip="Kraków (punkt odniesienia)",
+        icon=folium.Icon(color="purple", icon="star", prefix="fa")
+    ).add_to(m)
+
     df_combined = pd.DataFrame()
 
     for sheet_name in SHEET_NAMES:
