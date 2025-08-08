@@ -1,169 +1,163 @@
 import os
 import pandas as pd
-from otodom import main as main_script1  # Assuming script1 has a main() function
-from olx import main as main_script2      # Assuming script2 has a main() function
 import folium
 import openpyxl
 from openpyxl.utils import get_column_letter
+from collections import defaultdict
 
-# Paths to Excel files produced by script 1 and script 2
+# Importy Twoich skryptów (zakładam, że mają main() albo analogiczne funkcje uruchamiające)
+from otodom import main as main_script1
+from olx import main as main_script2
+from nieruchomosci_online import main as main_script3  # Twój nowy skrypt nieruchomosci-online
+
+# Ścieżki do plików Excel generowanych przez poszczególne skrypty
 EXCEL_FILE_1 = os.path.join('dzialki', 'otodom_dzialki.xlsx')
 EXCEL_FILE_2 = os.path.join('dzialki', 'olx_dzialki.xlsx')
+EXCEL_FILE_3 = os.path.join('dzialki', 'nieruchomosci_online_dzialki.xlsx')  # musi być tak zapisany w main_script3
+
+# Ścieżki do scalonych plików
 EXCEL_MERGED = os.path.join('dzialki_merged', 'dzialki_merged.xlsx')
 MAP_MERGED = os.path.join('dzialki_merged', 'map_merged.html')
 
-def merge_excels(file1, file2, output_file):
-    # Read two sheets from the first Excel file (for Krakow and Wielicki counties)
-    xls1 = pd.ExcelFile(file1)
-    df1_krakow = pd.read_excel(xls1, sheet_name='powiat krakowski')
-    df1_wielicki = pd.read_excel(xls1, sheet_name='powiat wielicki')
-    df1 = pd.concat([df1_krakow, df1_wielicki], ignore_index=True)
+def merge_excels(files_list, output_file):
+    dfs = []
+    for idx, file in enumerate(files_list):
+        if not os.path.exists(file):
+            print(f"❗ File not found: {file}")
+            continue
 
-    # Add a 'Source' column to identify origin as 'otodom'
-    df1['Source'] = 'otodom'
+        # Dla pliku otodom – dwie zakładki, dla pozostałych pojedyncze arkusze
+        if idx == 0:
+            xls = pd.ExcelFile(file)
+            try:
+                df_krakow = pd.read_excel(xls, sheet_name='powiat krakowski')
+                df_wielicki = pd.read_excel(xls, sheet_name='powiat wielicki')
+                df = pd.concat([df_krakow, df_wielicki], ignore_index=True)
+            except Exception as e:
+                print(f"Error reading sheets in {file}: {e}")
+                df = pd.read_excel(file)  # fallback na cały plik
+        else:
+            df = pd.read_excel(file)
 
-    # Read the second Excel file fully (assuming single sheet)
-    df2 = pd.read_excel(file2)
-    # Add a 'Source' column to identify origin as 'olx'
-    df2['Source'] = 'olx'
+        # Dodajemy kolumnę Source wg indexu
+        source_name = ['otodom', 'olx', 'nieruchomosci-online'][idx]
+        df['Source'] = source_name
 
-    # Combine both dataframes vertically
-    df_combined = pd.concat([df1, df2], ignore_index=True)
+        dfs.append(df)
 
-    # Normalize 'Link' column by stripping spaces and lowering case for proper deduplication
-    df_combined['Link'] = df_combined['Link'].astype(str).str.strip().str.lower()
+    if not dfs:
+        print("❗ Brak plików do scalania!")
+        return None
 
-    # Remove duplicate listings by 'Link', keeping only the first occurrence
-    df_unique = df_combined.drop_duplicates(subset=['Link'], keep='first').reset_index(drop=True)
+    df_combined = pd.concat(dfs, ignore_index=True)
 
-    # Define desired column order (adjust as needed)
-    desired_columns = [
-        'Title',
-        'Location',
-        'Latitude',
-        'Longitude',
-        'Price last updated',
-        'Price at first find',
-        'Distance from Krakow (km)',
-        'Link',
-        'Source',
-        'Active'
-    ]
-    columns_to_save = [col for col in desired_columns if col in df_unique.columns]
+    # Normalizacja linków i usuwanie duplikatów po linku (jeśli istnieje)
+    if 'Link' in df_combined.columns:
+        df_combined['Link'] = df_combined['Link'].astype(str).str.strip().str.lower()
+        df_unique = df_combined.drop_duplicates(subset=['Link'], keep='first').reset_index(drop=True)
+    else:
+        df_unique = df_combined.drop_duplicates().reset_index(drop=True)
 
-    # Ensure output directory exists and save merged data to Excel with correct column order
+    # Możesz dostosować kolumny do zapisu, tutaj prosto zapisujemy wszystko
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    df_unique.to_excel(output_file, index=False, columns=columns_to_save)
+    df_unique.to_excel(output_file, index=False)
 
-    # Adjust Excel column widths automatically based on max length of content
+    # Auto szerokość kolumn w Excelu
     wb = openpyxl.load_workbook(output_file)
     ws = wb.active
 
-    for col_idx, col in enumerate(columns_to_save, 1):
-        max_length = len(col)
-        for cell in ws[get_column_letter(col_idx)]:
+    for col_cells in ws.columns:
+        max_length = 0
+        col = get_column_letter(col_cells[0].column)
+        for cell in col_cells:
             try:
                 if cell.value:
                     max_length = max(max_length, len(str(cell.value)))
             except:
                 pass
-        adjusted_width = max_length + 2  # Add some padding for readability
-        ws.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
+        ws.column_dimensions[col].width = max_length + 2
 
     wb.save(output_file)
-    print(f"💾 Merged Excel file saved with adjusted column widths: {output_file}")
-
+    print(f"💾 Merged Excel saved: {output_file}")
     return df_unique
 
 def generate_merged_map(df, map_path):
-    # Coordinates of Krakow city center (reference point)
     KRAKOW_COORDS = (50.0647, 19.9450)
-    # Initialize folium map centered on Krakow
     m = folium.Map(location=KRAKOW_COORDS, zoom_start=10)
 
-    # Add marker for Krakow city center
     folium.Marker(
         location=KRAKOW_COORDS,
-        popup=folium.Popup("<b>Kraków</b><br>Reference point", max_width=200),
+        popup="<b>Kraków</b><br>Reference point",
         tooltip="Kraków",
         icon=folium.Icon(color="purple", icon="star", prefix="fa")
     ).add_to(m)
 
-    # Group listings by rounded coordinates (to cluster offers at same location)
-    location_to_listings = {}
+    location_to_listings = defaultdict(list)
 
     for _, row in df.iterrows():
-        # Skip inactive listings
-        if not row.get("Active", True):
+        if 'Active' in df.columns and not row.get("Active", True):
             continue
-
-        lat = row.get("Latitude")
-        lon = row.get("Longitude")
-        # Skip listings with missing coordinates
+        lat, lon = row.get("Latitude"), row.get("Longitude")
         if pd.isna(lat) or pd.isna(lon):
             continue
-
-        # Round coordinates to 5 decimal places for grouping
         coord_key = (round(lat, 5), round(lon, 5))
-        if coord_key not in location_to_listings:
-            location_to_listings[coord_key] = []
+        location_to_listings[coord_key].append(row)
 
-        # Append listing info along with its source (otodom or olx)
-        location_to_listings[coord_key].append({
-            "Title": row['Title'],
-            "Location": row['Location'],
-            "Price": row.get('Price last updated', row.get('Price at first find', '?')),
-            "Link": row['Link'],
-            "Distance": row.get("Distance from Krakow (km)", "?"),
-            "Source": row.get("Source", "unknown")
-        })
-
-    # Create markers for each location with a popup listing all offers there
     for (lat, lon), listings in location_to_listings.items():
-        popup_html = ""
-        for offer in listings:
-            popup_html += f"""
-            <b>{offer['Title']}</b><br>
-            {offer['Location']}<br>
-            {offer['Price']} PLN<br>
-            <a href='{offer['Link']}' target='_blank'>View listing</a>
-            <hr>
+        if len(listings) == 1:
+            l = listings[0]
+            popup_html = f"""
+                <b>{l.get('Title', 'Brak tytułu')}</b><br>
+                {l.get('Location', '')}<br>
+                {l.get('Price last updated', l.get('Price at first find', l.get('Price', '?')))}<br>
+                <a href="{l.get('Link', '#')}" target="_blank">View listing</a>
             """
-
-        # Decide marker color based on the source of the first listing at this location
-        first_source = listings[0]['Source'].lower()
-        if first_source == 'otodom':
-            marker_color = "green"
-        elif first_source == 'olx':
-            marker_color = "blue"
+            tooltip = l.get("Title", "Listing")
+            source = l.get("Source", "").lower()
         else:
-            marker_color = "gray"
+            popup_html = f"<b>{len(listings)} ogłoszenia</b><br><ul>"
+            for l in listings:
+                price = l.get('Price last updated', l.get('Price at first find', l.get('Price', '?')))
+                popup_html += f"<li><a href='{l.get('Link', '#')}' target='_blank'>{l.get('Title', 'Brak tytułu')}</a> – {price}</li>"
+            popup_html += "</ul>"
+            tooltip = f"{len(listings)} ogłoszeń"
+            source = listings[0].get("Source", "").lower()
+
+        # Kolor markera wg źródła
+        if source == 'otodom':
+            color = "green"
+        elif source == 'olx':
+            color = "blue"
+        elif source == 'nieruchomosci-online':
+            color = "orange"
+        else:
+            color = "gray"
 
         folium.Marker(
             location=[lat, lon],
             popup=folium.Popup(popup_html, max_width=300),
-            tooltip=f"{len(listings)} listings",
-            icon=folium.Icon(color=marker_color, icon="home", prefix="fa")
+            tooltip=tooltip,
+            icon=folium.Icon(color=color, icon="home", prefix="fa")
         ).add_to(m)
 
-    # Save the map as an HTML file
     m.save(map_path)
     print(f"🗺️ Merged map saved: {map_path}")
 
 def main():
-    # 1. Run script 1 (Otodom scraper)
-    print("🚀 Running script 1 (Otodom)...")
+    print("🚀 Uruchamiam skrypt 1 (Otodom)...")
     main_script1()
 
-    # 2. Run script 2 (OLX scraper)
-    print("🚀 Running script 2 (OLX)...")
+    print("🚀 Uruchamiam skrypt 2 (OLX)...")
     main_script2()
 
-    # 3. Merge Excel files and remove duplicate listings
-    df_merged = merge_excels(EXCEL_FILE_1, EXCEL_FILE_2, EXCEL_MERGED)
+    print("🚀 Uruchamiam skrypt 3 (Nieruchomosci-online)...")
+    main_script3()
 
-    # 4. Generate merged map with color-coded markers
-    generate_merged_map(df_merged, MAP_MERGED)
+    print("🔄 Scalanie wszystkich plików Excel...")
+    df_merged = merge_excels([EXCEL_FILE_1, EXCEL_FILE_2, EXCEL_FILE_3], EXCEL_MERGED)
+    if df_merged is not None:
+        print("🗺️ Tworzenie mapy z danych scalonych...")
+        generate_merged_map(df_merged, MAP_MERGED)
 
 if __name__ == "__main__":
     main()
