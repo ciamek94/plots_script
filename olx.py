@@ -91,14 +91,16 @@ def generate_map(df):
     for _, row in df.iterrows():
         if not row.get("Active", False):
             continue
-        location = row.get("Location")
-        distance, lat, lon = get_distance_from_krakow(location)
-        if lat is None or lon is None:
+
+        lat = row.get("Latitude")
+        lon = row.get("Longitude")
+
+        if pd.isna(lat) or pd.isna(lon):
             continue
 
         popup_html = f"""
         <b>{row['Title']}</b><br>
-        {location}<br>
+        {row['Location']}<br>
         {row['Price last updated']} PLN<br>
         <a href='{row['Link']}' target='_blank'>Zobacz ogłoszenie</a>
         """
@@ -111,7 +113,7 @@ def generate_map(df):
         ).add_to(m)
 
     m.save(MAP_FILE)
-    print(f"🗺️ Map saved to: {MAP_FILE}")
+    print(f"🗌️ Map saved to: {MAP_FILE}")
 
 def main():
     base_url = (
@@ -134,7 +136,7 @@ def main():
         df_existing = pd.DataFrame(columns=[
             "Title", "Location", "Price at first find", "Date first found",
             "Date last updated", "Price last updated", "Distance from Krakow (km)",
-            "Active", "Link"
+            "Active", "Link", "Latitude", "Longitude"
         ])
         print("📄 No existing Excel file found. A new one will be created.")
 
@@ -158,7 +160,7 @@ def main():
         soup = BeautifulSoup(response.text, "html.parser")
         cards = soup.find_all("div", {"data-cy": "l-card"})
         if not cards:
-            print(f"📭 No listings found on page {page}")
+            print(f"📬 No listings found on page {page}")
             empty_pages += 1
             page += 1
             continue
@@ -193,7 +195,9 @@ def main():
                 "Price last updated": price,
                 "Distance from Krakow (km)": distance,
                 "Active": True,
-                "Link": link
+                "Link": link,
+                "Latitude": lat,
+                "Longitude": lon
             })
 
         page += 1
@@ -222,23 +226,17 @@ def main():
     df_updated.reset_index(inplace=True)
 
     columns_final = [
-        "Title",
-        "Location",
-        "Price at first find",
-        "Date first found",
-        "Date last updated",
-        "Price last updated",
-        "Distance from Krakow (km)",
-        "Active",
-        "Link"
+        "Title", "Location", "Price at first find", "Date first found",
+        "Date last updated", "Price last updated", "Distance from Krakow (km)",
+        "Active", "Link", "Latitude", "Longitude"
     ]
 
     df_updated = df_updated[columns_final]
 
     df_updated.to_excel(EXCEL_FILE, index=False)
     autosize_columns(EXCEL_FILE)
-    print(f"💾 Listings saved to Excel file: {EXCEL_FILE}")
-    print(f"🆕 New rows added: {len(df_updated)}")
+    print(f"📂 Listings saved to Excel file: {EXCEL_FILE}")
+    print(f"🔟 New rows added: {len(df_updated)}")
 
     generate_map(df_updated)
 

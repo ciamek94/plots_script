@@ -47,7 +47,8 @@ HEADERS = [
     'Title', 'Location', 'Price at first find',
     'Date first found', 'Date last updated',
     'Price last updated', 'Distance from Krakow (km)',
-    'Active', 'Link'
+    'Active', 'Link',
+    'Latitude', 'Longitude',
 ]
 
 # Allowed counties around Krakow for better geocoding accuracy
@@ -55,7 +56,6 @@ ALLOWED_COUNTIES = ['krakowski', 'wielicki', 'wadowicki', 'chrzanowski', 'olkusk
 
 geolocator = Nominatim(user_agent="plot_script")
 max_distance_from_Krakow = 50
-
 
 # -------------------------------
 # 🔐 OneDrive token refresh function
@@ -134,26 +134,25 @@ def get_distance_to_krakow(town, county=""):
     allowed_counties = ALLOWED_COUNTIES
     queries = []
 
-    # Step 1: Try with county if it's in allowed list
     if county and county.lower() in allowed_counties:
-        queries.append(f"{town}, powiat {county}, małopolskie, Polska")
-
-    # Step 2: Try without county
-    queries.append(f"{town}, małopolskie, Polska")
+        queries.append(f"{town}, {county} county, Małopolskie, Poland")
+    queries.append(f"{town}, Małopolskie, Poland")
 
     for query in queries:
         places = safe_geocode(query)
         if places:
-            distances = [
-                geodesic(KRAKOW_COORDS, (p.latitude, p.longitude)).km
-                for p in places if hasattr(p, 'latitude') and hasattr(p, 'longitude')
-            ]
-            if distances:
-                valid_distances = [d for d in distances if d < max_distance_from_Krakow]
-                return round(min(valid_distances or distances), 2)
+            for p in places:
+                if hasattr(p, 'latitude') and hasattr(p, 'longitude'):
+                    distance = geodesic(KRAKOW_COORDS, (p.latitude, p.longitude)).km
+                    if distance < max_distance_from_Krakow:
+                        return round(distance, 2), p.latitude, p.longitude
 
-    print(f"⚠️ Nie znaleziono lokalizacji: {town} ({county}) – ustawiam jako -1 km")
-    return -1.0  # Use -1.0 to mark it clearly as 'not found'
+            # fallback to first found place
+            p = places[0]
+            return round(geodesic(KRAKOW_COORDS, (p.latitude, p.longitude)).km, 2), p.latitude, p.longitude
+
+    print(f"⚠️ Location not found: {town} ({county}) – setting distance as -1 km")
+    return -1.0, None, None
 
 # -------------------------------
 # 🧲 Scrape offers from Otodom
@@ -184,10 +183,7 @@ def scrape_offers(base_link, name):
                 price = parse_price(s.select_one('strong[data-cy="adPageHeaderPrice"]').text)
                 location = s.select_one('div[data-sentry-component="MapLink"] a').text.strip()
                 town = extract_relevant_town(location)
-                distance = get_distance_to_krakow(town, county)
-                if distance is None:
-                    print(f"⚠️ Nie znaleziono lokalizacji: {town} ({county}) – ustawiam jako -1 km")
-                    distance = -1.0
+                distance, lat, lon = get_distance_to_krakow(town, county)
 
                 results.append({
                     'Title': title,
@@ -198,7 +194,9 @@ def scrape_offers(base_link, name):
                     'Price last updated': price,
                     'Distance from Krakow (km)': distance,
                     'Active': True,
-                    'Link': url
+                    'Link': url,
+                    'Latitude': lat,
+                    'Longitude': lon
                 })
                 time.sleep(2)
             except Exception as e:
@@ -255,140 +253,41 @@ def update_sheet(results, sheet_name):
 
 # -------------------------------
 # 🗺️ Generate map from Excel data
-def generate_map():
-    import csv
-
-    # Initialize the map centered around Krakow
+def generate_map(df):
     m = folium.Map(location=KRAKOW_COORDS, zoom_start=10)
 
-    # Add reference marker for Krakow
     folium.Marker(
         location=KRAKOW_COORDS,
-        popup=folium.Popup("<b>Kraków</b><br>Punkt odniesienia", max_width=200),
-        tooltip="Kraków (punkt odniesienia)",
+        popup=folium.Popup("<b>Kraków</b><br>Reference point", max_width=200),
+        tooltip="Kraków",
         icon=folium.Icon(color="purple", icon="star", prefix="fa")
     ).add_to(m)
 
-    df_combined = pd.DataFrame()
-
-    # Read data from all Excel sheets
-    for sheet_name in SHEET_NAMES:
-        if os.path.exists(EXCEL_FILE):
-            df = pd.read_excel(EXCEL_FILE, sheet_name=sheet_name)
-            df['sheet_name'] = sheet_name
-            df_combined = pd.concat([df_combined, df], ignore_index=True)
-
-    marker_count = 0
-    location_to_listings = {}
-    valid_counties = [name.replace("powiat ", "") for name in SHEET_NAMES]
-
-    # Iterate through each row (offer) in the Excel sheets
-    for index, row in df_combined.iterrows():
-        if not row.get('Active', False):
+    for _, row in df.iterrows():
+        if not row.get("Active", True):
             continue
 
-        location_string = row.get('Location', '')
-        if not isinstance(location_string, str) or location_string.strip() == '':
-            print(f"⚠️ Skipped: missing location (row {index})")
+        lat = row.get("Latitude")
+        lon = row.get("Longitude")
+        if pd.isna(lat) or pd.isna(lon):
             continue
 
-        town = extract_relevant_town(location_string)
-        county = row['sheet_name'].replace("powiat ", "")
-        geocode_attempts = []
-
-        # First, try with the county if it's valid
-        if county in valid_counties:
-            geocode_attempts.append(f"{town}, powiat {county}, małopolskie, Polska")
-
-        # Fallback: try without the county
-        geocode_attempts.append(f"{town}, małopolskie, Polska")
-
-        coordinates_found = False
-        for query in geocode_attempts:
-            geocode_result = safe_geocode(query)
-            if not geocode_result:
-                continue
-
-            # Calculate distances from Krakow for each geocode result
-            places_with_distance = []
-            for place in geocode_result:
-                lat, lon = place.latitude, place.longitude
-                distance = geodesic(KRAKOW_COORDS, (lat, lon)).km
-                places_with_distance.append((distance, lat, lon))
-
-            # Sort by distance
-            places_with_distance.sort(key=lambda x: x[0])
-
-            # Try placing a marker if within range
-            for distance, lat, lon in places_with_distance:
-                if distance < max_distance_from_Krakow:
-                    coord_key = (round(lat, 5), round(lon, 5))
-
-                    if coord_key not in location_to_listings:
-                        location_to_listings[coord_key] = []
-
-                    location_to_listings[coord_key].append({
-                        "Title": row['Title'],
-                        "Location": location_string,
-                        "Price": row['Price last updated'],
-                        "Link": row['Link'],
-                        "Distance": round(distance, 2)
-                    })
-
-                    coordinates_found = True
-                    break
-
-            if coordinates_found:
-                break
-
-        if not coordinates_found:
-            print(f"⚠️ No coordinates found for: {town} ({county}) – offer NOT added to map")
-        else:
-            print(f"✔️ Geolocation successful: {row['Title']} | {location_string}")
-
-    # Add markers to the map from grouped listings
-    added_markers = []
-    for (lat, lon), listings in location_to_listings.items():
-        popup_html = ""
-        for offer in listings:
-            popup_html += f"<b>{offer['Title']}</b><br>{offer['Location']}<br>{offer['Price']} PLN<br><a href='{offer['Link']}' target='_blank'>Zobacz ogłoszenie</a><hr>"
+        popup_html = f"""
+        <b>{row['Title']}</b><br>
+        {row['Location']}<br>
+        {row.get('Price last updated', '')} PLN<br>
+        <a href='{row['Link']}' target='_blank'>Zobacz ogłoszenie</a>
+        """
 
         folium.Marker(
             location=[lat, lon],
             popup=folium.Popup(popup_html, max_width=300),
-            tooltip=f"{len(listings)} ogłoszeń",
-            icon=folium.Icon(color="green", icon="home", prefix="fa")
+            tooltip=row['Title'],
+            icon=folium.Icon(color="blue", icon="home", prefix="fa")
         ).add_to(m)
 
-        added_markers.append({
-            "Titles": "; ".join([o["Title"] for o in listings]),
-            "Location": listings[0]['Location'],
-            "Lat": lat,
-            "Lon": lon,
-            "Distance (km)": listings[0]['Distance'],
-            "Count": len(listings)
-        })
-
-        print(f"✅ Marker added: {len(listings)} offer(s) at {listings[0]['Location']} → ({lat}, {lon})")
-        marker_count += 1
-
-    print(f"📍 Total markers added: {marker_count}")
-
-    # Save list of added markers to CSV file
-    if added_markers:
-        csv_path = os.path.join(EXCEL_FOLDER, "added_markers.csv")
-        with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=added_markers[0].keys())
-            writer.writeheader()
-            writer.writerows(added_markers)
-        print(f"✅ CSV saved: {csv_path}")
-
-    # Save final map to HTML file
-    map_file = MAP_FILE
-    m.save(map_file)
-    print(f"🗺️ Map saved to file: {map_file}")
-
-    return map_file
+    m.save(MAP_FILE)
+    print(f"🗺️ Map saved to: {MAP_FILE}")
 
 # -------------------------------
 # 🚀 MAIN Function
@@ -396,12 +295,19 @@ def main():
     create_excel_with_sheets()
     update_sheet(scrape_offers(BASE_LINK_KRAKOW, 'powiat krakowski'), 'powiat krakowski')
     update_sheet(scrape_offers(BASE_LINK_WIELICKI, 'powiat wielicki'), 'powiat wielicki')
-    map_path = generate_map()
-    
+
+    df_combined = pd.concat([
+        pd.read_excel(EXCEL_FILE, sheet_name='powiat krakowski'),
+        pd.read_excel(EXCEL_FILE, sheet_name='powiat wielicki')
+    ], ignore_index=True)
+
+    generate_map(df_combined)
+
     print(f"📦 Done. Uploading {EXCEL_FILE} and map to OneDrive...")
     token = authenticate()
     upload_to_onedrive(EXCEL_FILE, token)
-    upload_to_onedrive(map_path, token)
+    upload_to_onedrive(MAP_FILE, token)
+
 # -------------------------------
 # 🚀 MAIN SCRIPT ENTRY POINT
 
