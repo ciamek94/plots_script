@@ -8,8 +8,11 @@ import random
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
 import folium
+from folium.plugins import MarkerCluster
 
-# Constants
+# =========================================
+# Constants & output paths
+# =========================================
 KRAKOW_COORDS = (50.0647, 19.9450)
 MAX_DISTANCE_KM = 50
 EXCEL_FOLDER = 'dzialki'
@@ -17,21 +20,26 @@ EXCEL_FILENAME = 'olx_dzialki.xlsx'
 EXCEL_FILE = os.path.join(EXCEL_FOLDER, EXCEL_FILENAME)
 MAP_FILE = os.path.join(EXCEL_FOLDER, 'olx_map_listings.html')
 
-# Ensure the output folder exists
 os.makedirs(EXCEL_FOLDER, exist_ok=True)
 
-def clean_price(price_str):
+# =========================================
+# Helpers
+# =========================================
+def clean_price(price_str: str) -> str:
     if not price_str:
         return ""
-    return price_str.replace("zł", "").replace("do negocjacji", "").replace(" ", "").strip()
+    return (price_str.replace("zł", "")
+                     .replace("do negocjacji", "")
+                     .replace(" ", "")
+                     .strip())
 
-def parse_location_date(loc_date_str):
+def parse_location_date(loc_date_str: str):
     parts = loc_date_str.split(" - ")
     if len(parts) == 2:
         return parts[0].strip(), parts[1].strip()
     return loc_date_str.strip(), ""
 
-def autosize_columns(filename):
+def autosize_columns(filename: str) -> None:
     wb = openpyxl.load_workbook(filename)
     ws = wb.active
     for column_cells in ws.columns:
@@ -43,15 +51,13 @@ def autosize_columns(filename):
         ws.column_dimensions[column].width = max_length + 2
     wb.save(filename)
 
-def get_distance_from_krakow(location):
+def get_distance_from_krakow(location: str):
     geolocator = Nominatim(user_agent="dzialki_app")
-
     def try_geocode(query):
         try:
-            return geolocator.geocode(query)
+            return geolocator.geocode(query, timeout=8)
         except:
             return None
-
     queries = [f"{location}, Poland", f"{location}, Malopolskie, Poland"]
     for query in queries:
         loc = try_geocode(query)
@@ -61,26 +67,35 @@ def get_distance_from_krakow(location):
                 return distance, loc.latitude, loc.longitude
     return None, None, None
 
-def check_if_active(url, headers):
+def check_if_active(url: str, headers: dict) -> bool:
     try:
         r = requests.head(url, headers=headers, allow_redirects=True, timeout=5)
+        if r.status_code == 200:
+            return True
+        r = requests.get(url, headers=headers, timeout=8)
         return r.status_code == 200
-    except:
-        return False
+    except Exception:
+        return True
 
-def get_with_retry(url, headers, retries=5):
-    for i in range(retries):
+def get_with_retry(url: str, headers: dict, retries: int = 5):
+    for _ in range(retries):
         try:
-            r = requests.get(url, headers=headers, timeout=10)
+            r = requests.get(url, headers=headers, timeout=12)
             if r.status_code == 200:
                 return r
-        except:
+        except Exception:
             pass
-        time.sleep(random.uniform(3, 6))
+        time.sleep(random.uniform(2.5, 5.0))
     return None
 
-def generate_map(df):
+# =========================================
+# Map generation
+# =========================================
+def generate_map(df: pd.DataFrame) -> None:
+    """Tworzy mapę z jednym markerem na punkt dla wielu ogłoszeń w tym samym miejscu."""
     m = folium.Map(location=KRAKOW_COORDS, zoom_start=10)
+
+    # Marker Krakowa
     folium.Marker(
         location=KRAKOW_COORDS,
         popup=folium.Popup("<b>Kraków</b><br>Reference point", max_width=200),
@@ -88,33 +103,38 @@ def generate_map(df):
         icon=folium.Icon(color="purple", icon="star", prefix="fa")
     ).add_to(m)
 
-    for _, row in df.iterrows():
-        if not row.get("Active", False):
-            continue
-
-        lat = row.get("Latitude")
-        lon = row.get("Longitude")
-
+    plotted = 0
+    grouped = df[df["Active"]].groupby(["Latitude", "Longitude"])
+    
+    for (lat, lon), group in grouped:
         if pd.isna(lat) or pd.isna(lon):
             continue
 
-        popup_html = f"""
-        <b>{row['Title']}</b><br>
-        {row['Location']}<br>
-        {row['Price last updated']} PLN<br>
-        <a href='{row['Link']}' target='_blank'>Zobacz ogłoszenie</a>
-        """
+        # Tworzymy HTML popup z listą ogłoszeń
+        popup_html = ""
+        for _, row in group.iterrows():
+            popup_html += f"""
+            <b>{row['Title']}</b><br>
+            {row['Location']}<br>
+            {row.get('Price last updated', '')} PLN<br>
+            <a href='{row['Link']}' target='_blank'>Zobacz ogłoszenie</a>
+            <hr>
+            """
 
         folium.Marker(
             location=[lat, lon],
             popup=folium.Popup(popup_html, max_width=300),
-            tooltip=row['Title'],
+            tooltip=f"{len(group)} ogłoszeń w tym miejscu",
             icon=folium.Icon(color="blue", icon="home", prefix="fa")
         ).add_to(m)
+        plotted += 1
 
     m.save(MAP_FILE)
-    print(f"🗌️ Map saved to: {MAP_FILE}")
+    print(f"🗺️ Map saved to: {MAP_FILE} (markers plotted: {plotted})")
 
+# =========================================
+# Main scraping & export
+# =========================================
 def main():
     base_url = (
         "https://www.olx.pl/nieruchomosci/dzialki/sprzedaz/krakow/"
@@ -131,6 +151,8 @@ def main():
 
     try:
         df_existing = pd.read_excel(EXCEL_FILE)
+        if not df_existing.empty and "Link" in df_existing.columns:
+            df_existing = df_existing.drop_duplicates(subset="Link", keep="first")
         print(f"📄 Existing Excel file found: {EXCEL_FILE}")
     except FileNotFoundError:
         df_existing = pd.DataFrame(columns=[
@@ -144,7 +166,6 @@ def main():
     page = 1
     empty_pages = 0
     max_empty_pages = 3
-
     print("🔍 Starting search for listings...")
 
     while empty_pages < max_empty_pages:
@@ -152,7 +173,6 @@ def main():
         print(f"🌐 Fetching page {page}: {url}")
         response = get_with_retry(url, headers)
         if response is None:
-            print(f"❌ Failed to fetch page {page}")
             empty_pages += 1
             page += 1
             continue
@@ -160,27 +180,30 @@ def main():
         soup = BeautifulSoup(response.text, "html.parser")
         cards = soup.find_all("div", {"data-cy": "l-card"})
         if not cards:
-            print(f"📬 No listings found on page {page}")
             empty_pages += 1
             page += 1
             continue
 
         print(f"✅ {len(cards)} listings found on page {page}")
+
         empty_pages = 0
-
         for card in cards:
-            title_elem = card.find("h4", class_="css-1g61gc2")
-            price_elem = card.find("p", {"data-testid": "ad-price"})
-            loc_date_elem = card.find("p", {"data-testid": "location-date"})
-            link_elem = card.find("a", class_="css-1tqlkj0")
+            title_elem = card.select_one('div[data-cy="ad-card-title"] h4')
+            title = title_elem.get_text(strip=True) if title_elem else ""
 
-            title = title_elem.text.strip() if title_elem else ""
-            price = clean_price(price_elem.text.strip()) if price_elem else ""
-            loc_date = loc_date_elem.text.strip() if loc_date_elem else ""
-            location, date_added = parse_location_date(loc_date)
-            link = link_elem["href"] if link_elem else ""
-            if not link.startswith("http"):
+            link_elem = card.find("a", class_="css-1tqlkj0")
+            link = link_elem["href"] if link_elem and link_elem.has_attr("href") else ""
+            if link and not link.startswith("http"):
                 link = "https://www.olx.pl" + link
+            if not link:
+                continue
+
+            price_elem = card.find("p", {"data-testid": "ad-price"})
+            price = clean_price(price_elem.get_text(strip=True)) if price_elem else ""
+
+            loc_date_elem = card.find("p", {"data-testid": "location-date"})
+            loc_date = loc_date_elem.get_text(strip=True) if loc_date_elem else ""
+            location, date_added = parse_location_date(loc_date)
 
             distance, lat, lon = get_distance_from_krakow(location)
             if distance is None:
@@ -207,36 +230,32 @@ def main():
         print("🚫 No listings found.")
         return
 
-    print(f"📊 Total listings collected: {len(all_listings)}")
-
     df_new = pd.DataFrame(all_listings)
-    df_existing.set_index("Link", inplace=True)
-    df_new.set_index("Link", inplace=True)
+    if not df_existing.empty:
+        df_merged = df_new.merge(
+            df_existing[["Link", "Date first found", "Price at first find"]],
+            on="Link",
+            how="left",
+            suffixes=("", "_old")
+        )
+        df_merged["Date first found"] = df_merged["Date first found_old"].fillna(df_merged["Date first found"])
+        df_merged["Price at first find"] = df_merged["Price at first find_old"].fillna(df_merged["Price at first find"])
+        df_merged = df_merged.drop(columns=["Date first found_old", "Price at first find_old"])
+    else:
+        df_merged = df_new.copy()
 
-    for link in df_new.index:
-        if link in df_existing.index:
-            df_new.at[link, "Date first found"] = df_existing.at[link, "Date first found"]
-            df_new.at[link, "Price at first find"] = df_existing.at[link, "Price at first find"]
-
-    df_updated = df_new.copy()
-
-    for link in df_updated.index:
-        df_updated.at[link, "Active"] = check_if_active(link, headers)
-
-    df_updated.reset_index(inplace=True)
+    df_merged["Active"] = df_merged["Link"].apply(lambda u: check_if_active(u, headers))
 
     columns_final = [
         "Title", "Location", "Price at first find", "Date first found",
         "Date last updated", "Price last updated", "Distance from Krakow (km)",
         "Active", "Link", "Latitude", "Longitude"
     ]
-
-    df_updated = df_updated[columns_final]
-
+    df_updated = df_merged[columns_final].copy()
     df_updated.to_excel(EXCEL_FILE, index=False)
     autosize_columns(EXCEL_FILE)
     print(f"📂 Listings saved to Excel file: {EXCEL_FILE}")
-    print(f"🔟 New rows added: {len(df_updated)}")
+    print(f"🧮 Rows in Excel: {len(df_updated)} (active: {int(df_updated['Active'].sum())})")
 
     generate_map(df_updated)
 

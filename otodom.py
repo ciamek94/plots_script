@@ -3,7 +3,7 @@ import time
 import datetime
 import os
 import pandas as pd
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from bs4 import BeautifulSoup
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
@@ -27,7 +27,7 @@ load_dotenv()
 # -------------------------------
 
 # -------------------------------
-# 🔐 Environment variables for OneDrive auth (.env file required locally)
+# 🔐 OneDrive authentication variables (stored in .env)
 CLIENT_ID = os.environ['ONEDRIVE_CLIENT_ID']
 REFRESH_TOKEN = os.environ['ONEDRIVE_REFRESH_TOKEN']
 SCOPES = ['offline_access', 'Files.ReadWrite.All']
@@ -51,16 +51,17 @@ HEADERS = [
     'Latitude', 'Longitude',
 ]
 
-# Allowed counties around Krakow for better geocoding accuracy
+# Allowed counties around Kraków for better geocoding accuracy
 ALLOWED_COUNTIES = ['krakowski', 'wielicki', 'wadowicki', 'chrzanowski', 'olkuski', 'myślenicki']
 
+# Geopy setup
 geolocator = Nominatim(user_agent="plot_script")
 max_distance_from_Krakow = 50
 
 # -------------------------------
-# 🔐 OneDrive token refresh function
-
+# 🔐 OneDrive token refresh
 def authenticate():
+    """Authenticate with OneDrive API using refresh token"""
     data = {
         'client_id': CLIENT_ID,
         'refresh_token': REFRESH_TOKEN,
@@ -73,9 +74,9 @@ def authenticate():
     return resp.json()
 
 # -------------------------------
-# ☁️ Upload file to OneDrive root directory
-
+# ☁️ Upload file to OneDrive
 def upload_to_onedrive(file_path, token):
+    """Upload a file to OneDrive root directory"""
     headers = {
         'Authorization': f"Bearer {token['access_token']}",
         'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -91,9 +92,9 @@ def upload_to_onedrive(file_path, token):
         print(f"❌ Upload failed: {r.status_code} {r.text}")
 
 # -------------------------------
-# 📊 Excel creation with headers and sheets
-
+# 📊 Create Excel file with headers and sheets
 def create_excel_with_sheets():
+    """Create Excel file with required sheets if it does not exist"""
     if not os.path.exists(EXCEL_FOLDER):
         os.makedirs(EXCEL_FOLDER)
 
@@ -110,11 +111,12 @@ def create_excel_with_sheets():
 
 # -------------------------------
 # 🔍 Utility functions
-
 def parse_price(price_str):
+    """Convert price string to integer"""
     return int(price_str.replace(' ', '').replace('zł', '').replace('PLN', '').replace(',', '').strip())
 
 def extract_relevant_town(location):
+    """Extract town name from location string"""
     parts = [part.strip() for part in location.split(',')]
     if parts[0].lower().startswith("ul.") and len(parts) > 1:
         return parts[1]
@@ -122,6 +124,7 @@ def extract_relevant_town(location):
         return parts[0]
 
 def safe_geocode(loc: str, max_retries: int = 2, timeout: int = 5):
+    """Try geocoding with retries and error handling"""
     for attempt in range(max_retries):
         try:
             return geolocator.geocode(loc, exactly_one=False, timeout=timeout)
@@ -131,10 +134,10 @@ def safe_geocode(loc: str, max_retries: int = 2, timeout: int = 5):
     return None
 
 def get_distance_to_krakow(town, county=""):
-    allowed_counties = ALLOWED_COUNTIES
+    """Get distance and coordinates of a town relative to Kraków"""
     queries = []
 
-    if county and county.lower() in allowed_counties:
+    if county and county.lower() in ALLOWED_COUNTIES:
         queries.append(f"{town}, {county} county, Małopolskie, Poland")
     queries.append(f"{town}, Małopolskie, Poland")
 
@@ -147,7 +150,7 @@ def get_distance_to_krakow(town, county=""):
                     if distance < max_distance_from_Krakow:
                         return round(distance, 2), p.latitude, p.longitude
 
-            # fallback to first found place
+            # fallback: use first found place
             p = places[0]
             return round(geodesic(KRAKOW_COORDS, (p.latitude, p.longitude)).km, 2), p.latitude, p.longitude
 
@@ -162,6 +165,7 @@ HEADERS_HTTP = {
 }
 
 def scrape_offers(base_link, name):
+    """Scrape offers from a given Otodom listing URL"""
     results = []
     today = datetime.date.today().strftime('%Y-%m-%d')
     county = name.replace("powiat ", "")
@@ -207,8 +211,8 @@ def scrape_offers(base_link, name):
 
 # -------------------------------
 # 🧾 Update Excel sheet with offers
-
 def update_sheet(results, sheet_name):
+    """Update Excel sheet with new and existing offers"""
     today = datetime.date.today().strftime('%Y-%m-%d')
     df_new = pd.DataFrame(results).dropna(how='all')
 
@@ -254,8 +258,10 @@ def update_sheet(results, sheet_name):
 # -------------------------------
 # 🗺️ Generate map from Excel data
 def generate_map(df):
+    """Generate interactive map with markers grouped by coordinates"""
     m = folium.Map(location=KRAKOW_COORDS, zoom_start=10)
 
+    # Kraków reference marker
     folium.Marker(
         location=KRAKOW_COORDS,
         popup=folium.Popup("<b>Kraków</b><br>Reference point", max_width=200),
@@ -263,27 +269,39 @@ def generate_map(df):
         icon=folium.Icon(color="purple", icon="star", prefix="fa")
     ).add_to(m)
 
+    # Group offers by coordinates
+    marker_groups = defaultdict(list)
     for _, row in df.iterrows():
         if not row.get("Active", True):
             continue
-
-        lat = row.get("Latitude")
-        lon = row.get("Longitude")
+        lat, lon = row.get("Latitude"), row.get("Longitude")
         if pd.isna(lat) or pd.isna(lon):
             continue
+        marker_groups[(lat, lon)].append(row)
 
-        popup_html = f"""
-        <b>{row['Title']}</b><br>
-        {row['Location']}<br>
-        {row.get('Price last updated', '')} PLN<br>
-        <a href='{row['Link']}' target='_blank'>Zobacz ogłoszenie</a>
-        """
+    # Add grouped markers
+    for (lat, lon), listings in marker_groups.items():
+        if len(listings) == 1:
+            row = listings[0]
+            popup_html = f"""
+            <b>{row['Title']}</b><br>
+            {row['Location']}<br>
+            {row.get('Price last updated', '')} PLN<br>
+            <a href='{row['Link']}' target='_blank'>View listing</a>
+            """
+            tooltip = row['Title']
+        else:
+            popup_html = f"<b>{len(listings)} listings</b><br><ul>"
+            for r in listings:
+                popup_html += f"<li><a href='{r['Link']}' target='_blank'>{r['Title']}</a> – {r['Price last updated']} PLN</li>"
+            popup_html += "</ul>"
+            tooltip = f"{len(listings)} listings in this location"
 
         folium.Marker(
             location=[lat, lon],
             popup=folium.Popup(popup_html, max_width=300),
-            tooltip=row['Title'],
-            icon=folium.Icon(color="blue", icon="home", prefix="fa")
+            tooltip=tooltip,
+            icon=folium.Icon(color="green", icon="home", prefix="fa")
         ).add_to(m)
 
     m.save(MAP_FILE)
@@ -310,6 +328,5 @@ def main():
 
 # -------------------------------
 # 🚀 MAIN SCRIPT ENTRY POINT
-
 if __name__ == "__main__":
     main()
