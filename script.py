@@ -4,11 +4,33 @@ import folium
 import openpyxl
 from openpyxl.utils import get_column_letter
 from collections import defaultdict
+import requests
 
 # Importy Twoich skryptów (zakładam, że mają main() albo analogiczne funkcje uruchamiające)
 from otodom import main as main_script1
 from olx import main as main_script2
 from nieruchomosci_online import main as main_script3  # Twój nowy skrypt nieruchomosci-online
+
+# -------------------------------
+# 🔧 Uncomment the following 2 lines locally to enable loading variables from the .env file
+from dotenv import load_dotenv
+load_dotenv()
+
+# -------------------------------
+# 🔐 Environment variables required in .env:
+# ONEDRIVE_CLIENT_ID=your_client_id
+# ONEDRIVE_REFRESH_TOKEN=your_refresh_token
+# 
+# NOTE: The .env file is not pushed to GitHub — add these values to GitHub Secrets as well
+# if you want to run the script automatically via GitHub Actions.
+# -------------------------------
+
+# -------------------------------
+# 🔐 OneDrive authentication variables (stored in .env)
+CLIENT_ID = os.environ['ONEDRIVE_CLIENT_ID']
+REFRESH_TOKEN = os.environ['ONEDRIVE_REFRESH_TOKEN']
+SCOPES = ['offline_access', 'Files.ReadWrite.All']
+TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
 
 # Ścieżki do plików Excel generowanych przez poszczególne skrypty
 EXCEL_FILE_1 = os.path.join('dzialki', 'otodom_dzialki.xlsx')
@@ -18,6 +40,39 @@ EXCEL_FILE_3 = os.path.join('dzialki', 'nieruchomosci_online_dzialki.xlsx')  # m
 # Ścieżki do scalonych plików
 EXCEL_MERGED = os.path.join('dzialki_merged', 'dzialki_merged.xlsx')
 MAP_MERGED = os.path.join('dzialki_merged', 'map_merged.html')
+
+# -------------------------------
+# 🔐 OneDrive token refresh
+def authenticate():
+    """Authenticate with OneDrive API using refresh token"""
+    data = {
+        'client_id': CLIENT_ID,
+        'refresh_token': REFRESH_TOKEN,
+        'grant_type': 'refresh_token',
+        'scope': 'offline_access Files.ReadWrite.All',
+    }
+    resp = requests.post(TOKEN_URL, data=data)
+    if resp.status_code != 200:
+        raise Exception(f"❌ Failed to authenticate: {resp.text}")
+    return resp.json()
+
+# -------------------------------
+# ☁️ Upload file to OneDrive
+def upload_to_onedrive(file_path, token):
+    """Upload a file to OneDrive root directory"""
+    headers = {
+        'Authorization': f"Bearer {token['access_token']}",
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    }
+    with open(file_path, 'rb') as f:
+        file_data = f.read()
+
+    upload_url = f'https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}:/content'
+    r = requests.put(upload_url, headers=headers, data=file_data)
+    if r.status_code in (200, 201):
+        print(f"✅ File uploaded to OneDrive: {file_path}")
+    else:
+        print(f"❌ Upload failed: {r.status_code} {r.text}")
 
 def merge_excels(files_list, output_file):
     dfs = []
@@ -158,6 +213,11 @@ def main():
     if df_merged is not None:
         print("🗺️ Tworzenie mapy z danych scalonych...")
         generate_merged_map(df_merged, MAP_MERGED)
+
+    print(f"📦 Done. Uploading {EXCEL_MERGED} and map to OneDrive...")
+    token = authenticate()
+    upload_to_onedrive(EXCEL_MERGED, token)
+    upload_to_onedrive(MAP_MERGED, token)
 
 if __name__ == "__main__":
     main()

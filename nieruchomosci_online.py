@@ -10,6 +10,20 @@ from geopy.distance import geodesic
 import folium
 from collections import defaultdict
 
+# -------------------------------
+# 🔧 Uncomment the following 2 lines locally to enable loading variables from the .env file
+from dotenv import load_dotenv
+load_dotenv()
+
+# -------------------------------
+# 🔐 Environment variables required in .env:
+# ONEDRIVE_CLIENT_ID=your_client_id
+# ONEDRIVE_REFRESH_TOKEN=your_refresh_token
+# 
+# NOTE: The .env file is not pushed to GitHub — add these values to GitHub Secrets as well
+# if you want to run the script automatically via GitHub Actions.
+# -------------------------------
+
 # Constants
 KRAKOW_COORDS = (50.0647, 19.9450)
 MAX_DISTANCE_KM = 50
@@ -21,8 +35,49 @@ MAP_FILE = os.path.join(EXCEL_FOLDER, 'nieruchomosci_online_map_listings.html')
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 BASE_URL = "https://www.nieruchomosci-online.pl/szukaj.html?3,dzialka,sprzedaz,,Krak%C3%B3w:5600,,,25,-250000,1150,,,,,,,,,,,,,1"
 
+# -------------------------------
+# 🔐 OneDrive authentication variables (stored in .env)
+CLIENT_ID = os.environ['ONEDRIVE_CLIENT_ID']
+REFRESH_TOKEN = os.environ['ONEDRIVE_REFRESH_TOKEN']
+SCOPES = ['offline_access', 'Files.ReadWrite.All']
+TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
+
 results = []
 geolocator = Nominatim(user_agent="dzialki_locator")
+
+# -------------------------------
+# 🔐 OneDrive token refresh
+def authenticate():
+    """Authenticate with OneDrive API using refresh token"""
+    data = {
+        'client_id': CLIENT_ID,
+        'refresh_token': REFRESH_TOKEN,
+        'grant_type': 'refresh_token',
+        'scope': 'offline_access Files.ReadWrite.All',
+    }
+    resp = requests.post(TOKEN_URL, data=data)
+    if resp.status_code != 200:
+        raise Exception(f"❌ Failed to authenticate: {resp.text}")
+    return resp.json()
+
+# -------------------------------
+# ☁️ Upload file to OneDrive
+def upload_to_onedrive(file_path, token):
+    """Upload a file to OneDrive root directory"""
+    headers = {
+        'Authorization': f"Bearer {token['access_token']}",
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    }
+    with open(file_path, 'rb') as f:
+        file_data = f.read()
+
+    upload_url = f'https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}:/content'
+    r = requests.put(upload_url, headers=headers, data=file_data)
+    if r.status_code in (200, 201):
+        print(f"✅ File uploaded to OneDrive: {file_path}")
+    else:
+        print(f"❌ Upload failed: {r.status_code} {r.text}")
+
 
 # Get coordinates and distance from Kraków using only city/town part
 def get_distance_from_krakow(location):
@@ -160,6 +215,11 @@ def main():
 
     print(f"\n✅ Data saved to: {EXCEL_FILE}")
     print(f"🗺️ Map saved to: {MAP_FILE}")
+
+    print(f"📦 Done. Uploading {EXCEL_FILE} and map to OneDrive...")
+    token = authenticate()
+    upload_to_onedrive(EXCEL_FILE, token)
+    upload_to_onedrive(MAP_FILE, token)
 
 
 if __name__ == "__main__":
