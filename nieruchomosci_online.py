@@ -35,18 +35,27 @@ MAP_FILE = os.path.join(EXCEL_FOLDER, 'nieruchomosci_online_map_listings.html')
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 BASE_URL = "https://www.nieruchomosci-online.pl/szukaj.html?3,dzialka,sprzedaz,,Krak%C3%B3w:5600,,,25,-250000,1150,,,,,,,,,,,,,1"
 
-# -------------------------------
-# 🔐 OneDrive authentication variables (stored in .env)
+# OneDrive credentials
 CLIENT_ID = os.environ['ONEDRIVE_CLIENT_ID']
 REFRESH_TOKEN = os.environ['ONEDRIVE_REFRESH_TOKEN']
-SCOPES = ['offline_access', 'Files.ReadWrite.All']
 TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
+
+# Allowed counties for Małopolska
+ALLOWED_COUNTIES = ['krakowski', 'wielicki', 'wadowicki', 'chrzanowski', 'olkuski', 'myślenicki']
+COUNTY_COORDS = {
+    'krakowski': (50.0647, 19.9450),
+    'wielicki': (49.9871, 20.0644),
+    'wadowicki': (49.8833, 19.4881),
+    'chrzanowski': (50.1376, 19.3988),
+    'olkuski': (50.2810, 19.5653),
+    'myślenicki': (49.8333, 19.9333)
+}
 
 results = []
 geolocator = Nominatim(user_agent="dzialki_locator")
 
 # -------------------------------
-# 🔐 OneDrive token refresh
+# OneDrive authentication
 def authenticate():
     """Authenticate with OneDrive API using refresh token"""
     data = {
@@ -61,7 +70,7 @@ def authenticate():
     return resp.json()
 
 # -------------------------------
-# ☁️ Upload file to OneDrive
+# Upload file to OneDrive
 def upload_to_onedrive(file_path, token):
     """Upload a file to OneDrive root directory"""
     headers = {
@@ -70,7 +79,6 @@ def upload_to_onedrive(file_path, token):
     }
     with open(file_path, 'rb') as f:
         file_data = f.read()
-
     upload_url = f'https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}:/content'
     r = requests.put(upload_url, headers=headers, data=file_data)
     if r.status_code in (200, 201):
@@ -78,38 +86,77 @@ def upload_to_onedrive(file_path, token):
     else:
         print(f"❌ Upload failed: {r.status_code} {r.text}")
 
-
-# Get coordinates and distance from Kraków using only city/town part
-def get_distance_from_krakow(location):
-    try:
-        town = location.split("(")[0].strip()
-        geo = geolocator.geocode(f"{town}, Poland")
-        if geo:
-            coords = (geo.latitude, geo.longitude)
-            distance = round(geodesic(KRAKOW_COORDS, coords).km, 2)
+# -------------------------------
+# Get distance from Kraków with county filter and retry
+def get_distance_from_krakow(location, max_retries=3):
+    """Return distance and coordinates if within allowed counties and distance"""
+    town = location.split("(")[0].strip().lower()
+    for county in ALLOWED_COUNTIES:
+        if county in town:
+            lat, lon = COUNTY_COORDS[county]
+            distance = round(geodesic(KRAKOW_COORDS, (lat, lon)).km, 2)
             if distance <= MAX_DISTANCE_KM:
-                return distance, geo.latitude, geo.longitude
-    except:
-        pass
+                return distance, lat, lon
+            else:
+                print(f"⚠️ {town} found but too far: {distance} km")
+                return None, None, None
+    # Retry using geolocator for towns not matching counties
+    for attempt in range(max_retries):
+        try:
+            geo = geolocator.geocode(f"{town}, Lesser Poland Voivodeship, Poland", timeout=10)
+            if geo:
+                coords = (geo.latitude, geo.longitude)
+                distance = round(geodesic(KRAKOW_COORDS, coords).km, 2)
+                if distance <= MAX_DISTANCE_KM:
+                    return distance, coords[0], coords[1]
+                else:
+                    print(f"⚠️ {town} found but too far: {distance} km")
+                    return None, None, None
+        except Exception as e:
+            print(f"⚠️ Geocoding attempt {attempt+1} failed for {town}: {e}")
     return None, None, None
 
+# -------------------------------
+# Main scraping function
 def main():
-    # Ensure output folder exists
     os.makedirs(EXCEL_FOLDER, exist_ok=True)
 
-    # Loop through listing pages
+    total_raw = 0
+    total_unique = 0
+    total_geocoded = 0
+
     for page in range(1, MAX_PAGES + 1):
         url = BASE_URL if page == 1 else f"{BASE_URL}&p={page}"
-        print(f"Fetching page {page}: {url}")
+        print(f"\n🌐 Fetching page {page}: {url}")
         response = requests.get(url, headers=HEADERS)
         if response.status_code != 200:
-            print(f"Failed to load page {page}")
+            print(f"❌ Failed to load page {page}")
             break
 
         soup = BeautifulSoup(response.text, "html.parser")
-        listings = soup.find_all("div", class_="tile-inner") + soup.find_all("div", class_="tertiary")
+        raw_links = soup.select("h2.name a")
+        raw_count = len(raw_links)
+        total_raw += raw_count
+        print(f"✅ Found {raw_count} raw listings on page {page}")
 
-        for listing in listings:
+        # Deduplicate by link
+        seen_links = set()
+        clean_listings = []
+        for a in raw_links:
+            link = a.get("href")
+            if not link or link in seen_links:
+                continue
+            seen_links.add(link)
+            parent = a.find_parent("div", class_=lambda x: x and ("tile-inner" in x or "tertiary" in x))
+            if parent:
+                clean_listings.append(parent)
+
+        unique_count = len(clean_listings)
+        total_unique += unique_count
+        print(f"🔎 After deduplication: {unique_count} unique listings on page {page}")
+
+        # Extract data from listings
+        for listing in clean_listings:
             try:
                 title_tag = listing.find("h2", class_="name")
                 title = title_tag.text.strip() if title_tag else "No title"
@@ -127,6 +174,9 @@ def main():
                 else:
                     distance, lat, lon = None, None, None
 
+                if lat and lon:
+                    total_geocoded += 1
+
                 results.append({
                     "Title": title,
                     "Location": location,
@@ -143,17 +193,21 @@ def main():
 
         time.sleep(1)
 
-    # Create DataFrame from scraped results
-    df = pd.DataFrame(results).drop_duplicates()
+    # Print final counters
+    print("\n📊 SUMMARY:")
+    print(f"   Raw listings found:       {total_raw}")
+    print(f"   Unique listings by link:  {total_unique}")
+    print(f"   Geocoded listings (<{MAX_DISTANCE_KM} km): {total_geocoded}")
 
-    # Filter out archived or invalid offers
+    # Create DataFrame
+    df = pd.DataFrame(results).drop_duplicates()
     df = df[df["Link"] != "No link"]
     df = df[pd.notna(df["Latitude"]) & pd.notna(df["Longitude"])]
 
     # Save to Excel
     df.to_excel(EXCEL_FILE, index=False)
 
-    # Auto-fit Excel column widths
+    # Auto-fit Excel columns
     wb = openpyxl.load_workbook(EXCEL_FILE)
     ws = wb.active
     for column_cells in ws.columns:
@@ -168,33 +222,19 @@ def main():
         ws.column_dimensions[column].width = max_length + 2
     wb.save(EXCEL_FILE)
 
-    # Create interactive map centered on Kraków
+    # Create map
     m = folium.Map(location=KRAKOW_COORDS, zoom_start=10)
+    folium.Marker(location=KRAKOW_COORDS, popup="Kraków - Reference Point", tooltip="Kraków", icon=folium.Icon(color="purple")).add_to(m)
 
-    # Add Kraków marker
-    folium.Marker(
-        location=KRAKOW_COORDS,
-        popup="Kraków - Reference Point",
-        tooltip="Kraków",
-        icon=folium.Icon(color="purple")
-    ).add_to(m)
-
-    # Group listings by exact coordinates
     marker_groups = defaultdict(list)
     for _, row in df.iterrows():
         coord = (row["Latitude"], row["Longitude"])
         marker_groups[coord].append(row)
 
-    # Add grouped markers to the map
     for coord, listings in marker_groups.items():
         if len(listings) == 1:
             l = listings[0]
-            popup_html = f"""
-            <b>{l['Title']}</b><br>
-            {l['Location']}<br>
-            {l['Price']}<br>
-            <a href="{l['Link']}" target="_blank">View Listing</a>
-            """
+            popup_html = f"<b>{l['Title']}</b><br>{l['Location']}<br>{l['Price']}<br><a href='{l['Link']}' target='_blank'>View Listing</a>"
             tooltip = l["Title"]
         else:
             popup_html = f"<b>{len(listings)} listings</b><br><ul>"
@@ -203,24 +243,19 @@ def main():
             popup_html += "</ul>"
             tooltip = f"{len(listings)} listings at same location"
 
-        folium.Marker(
-            location=coord,
-            popup=folium.Popup(popup_html, max_width=300),
-            tooltip=tooltip,
-            icon=folium.Icon(color="orange", icon="home")
-        ).add_to(m)
+        folium.Marker(location=coord, popup=folium.Popup(popup_html, max_width=300),
+                      tooltip=tooltip, icon=folium.Icon(color="orange", icon="home")).add_to(m)
 
-    # Save map to file
+    # Save map
     m.save(MAP_FILE)
 
     print(f"\n✅ Data saved to: {EXCEL_FILE}")
     print(f"🗺️ Map saved to: {MAP_FILE}")
 
-    print(f"📦 Done. Uploading {EXCEL_FILE} and map to OneDrive...")
+    print(f"📦 Done. Uploading files to OneDrive...")
     token = authenticate()
     upload_to_onedrive(EXCEL_FILE, token)
     upload_to_onedrive(MAP_FILE, token)
-
 
 if __name__ == "__main__":
     main()
