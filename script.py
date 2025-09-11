@@ -81,7 +81,6 @@ def merge_excels(files_list, output_file):
             print(f"❗ File not found: {file}")
             continue
 
-        # Dla pliku otodom – dwie zakładki, dla pozostałych pojedyncze arkusze
         if idx == 0:
             xls = pd.ExcelFile(file)
             try:
@@ -90,14 +89,12 @@ def merge_excels(files_list, output_file):
                 df = pd.concat([df_krakow, df_wielicki], ignore_index=True)
             except Exception as e:
                 print(f"Error reading sheets in {file}: {e}")
-                df = pd.read_excel(file)  # fallback na cały plik
+                df = pd.read_excel(file)
         else:
             df = pd.read_excel(file)
 
-        # Dodajemy kolumnę Source wg indexu
         source_name = ['otodom', 'olx', 'nieruchomosci-online'][idx]
         df['Source'] = source_name
-
         dfs.append(df)
 
     if not dfs:
@@ -106,21 +103,15 @@ def merge_excels(files_list, output_file):
 
     df_combined = pd.concat(dfs, ignore_index=True)
 
-    # Normalizacja linków i usuwanie duplikatów po linku (jeśli istnieje)
-    if 'Link' in df_combined.columns:
-        df_combined['Link'] = df_combined['Link'].astype(str).str.strip().str.lower()
-        df_unique = df_combined.drop_duplicates(subset=['Link'], keep='first').reset_index(drop=True)
-    else:
-        df_unique = df_combined.drop_duplicates().reset_index(drop=True)
+    # Keep all rows, do not remove duplicates
+    df_unique = df_combined.reset_index(drop=True)
 
-    # Możesz dostosować kolumny do zapisu, tutaj prosto zapisujemy wszystko
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     df_unique.to_excel(output_file, index=False)
 
-    # Auto szerokość kolumn w Excelu
+    # Auto column width
     wb = openpyxl.load_workbook(output_file)
     ws = wb.active
-
     for col_cells in ws.columns:
         max_length = 0
         col = get_column_letter(col_cells[0].column)
@@ -131,10 +122,10 @@ def merge_excels(files_list, output_file):
             except:
                 pass
         ws.column_dimensions[col].width = max_length + 2
-
     wb.save(output_file)
     print(f"💾 Merged Excel saved: {output_file}")
     return df_unique
+
 
 def generate_merged_map(df, map_path):
     KRAKOW_COORDS = (50.0647, 19.9450)

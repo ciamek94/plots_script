@@ -9,6 +9,8 @@ from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
 import folium
 from folium.plugins import MarkerCluster
+from collections import defaultdict
+from dotenv import load_dotenv
 
 # =========================================
 # Constants & output paths
@@ -108,23 +110,49 @@ def autosize_columns(filename: str) -> None:
         ws.column_dimensions[column].width = max_length + 2
     wb.save(filename)
 
+def load_towns(file_path="town_list.txt"):
+    """Load towns and their coordinates from file"""
+    towns = defaultdict(list)
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split("|")
+                if len(parts) == 3:
+                    town, lat, lon = parts
+                    towns[town.lower()].append((float(lat), float(lon)))
+    print(f"ℹ️ Loaded {sum(len(v) for v in towns.values())} town coordinates from {file_path}")
+    return towns
+
+TOWN_COORDS = load_towns("town_list.txt")
+
 def get_distance_from_krakow(location: str):
-    geolocator = Nominatim(user_agent="dzialki_app")
-    def try_geocode(query):
-        try:
-            return geolocator.geocode(query, timeout=8)
-        except:
-            return None
-    queries = [f"{location}, Poland", f"{location}, Malopolskie, Poland"]
-    for query in queries:
-        loc = try_geocode(query)
-        if loc:
-            distance = round(geodesic(KRAKOW_COORDS, (loc.latitude, loc.longitude)).km, 2)
+    """Return a list of (distance, lat, lon) for all coordinates of a town within MAX_DISTANCE_KM"""
+    town = location.split("(")[0].strip().lower()
+    results = []
+
+    # Use coordinates from town_list.txt
+    if town in TOWN_COORDS:
+        for lat, lon in TOWN_COORDS[town]:
+            distance = round(geodesic(KRAKOW_COORDS, (lat, lon)).km, 2)
             if distance <= MAX_DISTANCE_KM:
-                return distance, loc.latitude, loc.longitude
-    return None, None, None
+                results.append((distance, lat, lon))
+
+    # Fallback to geopy if no town coordinates found
+    if not results:
+        geolocator = Nominatim(user_agent="dzialki_app")
+        try:
+            geo = geolocator.geocode(f"{town}, Malopolskie, Poland", timeout=8)
+            if geo:
+                distance = round(geodesic(KRAKOW_COORDS, (geo.latitude, geo.longitude)).km, 2)
+                if distance <= MAX_DISTANCE_KM:
+                    results.append((distance, geo.latitude, geo.longitude))
+        except Exception as e:
+            print(f"⚠️ Geopy failed for {town}: {e}")
+
+    return results  # always return a list (can be empty)
 
 def check_if_active(url: str, headers: dict) -> bool:
+    """Check if a listing URL is still active"""
     try:
         r = requests.head(url, headers=headers, allow_redirects=True, timeout=5)
         if r.status_code == 200:
@@ -135,6 +163,7 @@ def check_if_active(url: str, headers: dict) -> bool:
         return True
 
 def get_with_retry(url: str, headers: dict, retries: int = 5):
+    """Retry GET request up to N times"""
     for _ in range(retries):
         try:
             r = requests.get(url, headers=headers, timeout=12)
@@ -145,14 +174,11 @@ def get_with_retry(url: str, headers: dict, retries: int = 5):
         time.sleep(random.uniform(2.5, 5.0))
     return None
 
-# =========================================
-# Map generation
-# =========================================
 def generate_map(df: pd.DataFrame) -> None:
-    """Tworzy mapę z jednym markerem na punkt dla wielu ogłoszeń w tym samym miejscu."""
+    """Generate HTML map with markers for listings"""
     m = folium.Map(location=KRAKOW_COORDS, zoom_start=10)
 
-    # Marker Krakowa
+    # Marker for Krakow
     folium.Marker(
         location=KRAKOW_COORDS,
         popup=folium.Popup("<b>Kraków</b><br>Reference point", max_width=200),
@@ -162,26 +188,25 @@ def generate_map(df: pd.DataFrame) -> None:
 
     plotted = 0
     grouped = df[df["Active"]].groupby(["Latitude", "Longitude"])
-    
+
     for (lat, lon), group in grouped:
         if pd.isna(lat) or pd.isna(lon):
             continue
 
-        # Tworzymy HTML popup z listą ogłoszeń
         popup_html = ""
         for _, row in group.iterrows():
             popup_html += f"""
             <b>{row['Title']}</b><br>
             {row['Location']}<br>
             {row.get('Price last updated', '')} PLN<br>
-            <a href='{row['Link']}' target='_blank'>Zobacz ogłoszenie</a>
+            <a href='{row['Link']}' target='_blank'>View listing</a>
             <hr>
             """
 
         folium.Marker(
             location=[lat, lon],
             popup=folium.Popup(popup_html, max_width=300),
-            tooltip=f"{len(group)} ogłoszeń w tym miejscu",
+            tooltip=f"{len(group)} listings at this location",
             icon=folium.Icon(color="blue", icon="home", prefix="fa")
         ).add_to(m)
         plotted += 1
@@ -194,12 +219,13 @@ def generate_map(df: pd.DataFrame) -> None:
 # =========================================
 def main():
     base_url = (
-        "https://www.olx.pl/nieruchomosci/dzialki/sprzedaz/krakow/"
-        "q-dzialka-budowlana/?search[dist]=30"
-        "&search[filter_enum_type][0]=dzialki-budowlane"
-        "&search[filter_float_m:from]=1150"
-        "&search[filter_float_price:to]=250000"
-        "&page={page}"
+    "https://www.olx.pl/nieruchomosci/dzialki/sprzedaz/krakow/"
+    "?search%5Bdist%5D=30"
+    "&search%5Bfilter_float_price:to%5D=250000"
+    "&search%5Bfilter_enum_type%5D%5B0%5D=dzialki-budowlane"
+    "&search%5Bfilter_enum_type%5D%5B1%5D=dzialki-rolno-budowlane"
+    "&search%5Bfilter_float_m:from%5D=1150"
+    "&page={page}"
     )
     headers = {
         "User-Agent": "Mozilla/5.0",
@@ -242,8 +268,8 @@ def main():
             continue
 
         print(f"✅ {len(cards)} listings found on page {page}")
-
         empty_pages = 0
+
         for card in cards:
             title_elem = card.select_one('div[data-cy="ad-card-title"] h4')
             title = title_elem.get_text(strip=True) if title_elem else ""
@@ -262,23 +288,26 @@ def main():
             loc_date = loc_date_elem.get_text(strip=True) if loc_date_elem else ""
             location, date_added = parse_location_date(loc_date)
 
-            distance, lat, lon = get_distance_from_krakow(location)
-            if distance is None:
+            # Get all coordinates for this location
+            coords_list = get_distance_from_krakow(location)
+            if not coords_list:
                 continue
 
-            all_listings.append({
-                "Title": title,
-                "Location": location,
-                "Price at first find": price,
-                "Date first found": date_added,
-                "Date last updated": date_added,
-                "Price last updated": price,
-                "Distance from Krakow (km)": distance,
-                "Active": True,
-                "Link": link,
-                "Latitude": lat,
-                "Longitude": lon
-            })
+            # Create a separate row for each coordinate
+            for distance, lat, lon in coords_list:
+                all_listings.append({
+                    "Title": title,
+                    "Location": location,
+                    "Price at first find": price,
+                    "Date first found": date_added,
+                    "Date last updated": date_added,
+                    "Price last updated": price,
+                    "Distance from Krakow (km)": distance,
+                    "Active": True,
+                    "Link": link,
+                    "Latitude": lat,
+                    "Longitude": lon
+                })
 
         page += 1
         time.sleep(random.uniform(2, 4))
@@ -316,10 +345,13 @@ def main():
 
     generate_map(df_updated)
 
-    print(f"📦 Done. Uploading {EXCEL_FILE} and map to OneDrive...")
-    token = authenticate()
-    upload_to_onedrive(EXCEL_FILE, token)
-    upload_to_onedrive(MAP_FILE, token)
+    if CLIENT_ID and REFRESH_TOKEN:
+        print(f"📦 Done. Uploading {EXCEL_FILE} and map to OneDrive...")
+        token = authenticate()
+        upload_to_onedrive(EXCEL_FILE, token)
+        upload_to_onedrive(MAP_FILE, token)
+    else:
+        print("⚠️ OneDrive credentials not found. Skipping upload.")
 
 if __name__ == "__main__":
     main()

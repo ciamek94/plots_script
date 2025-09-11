@@ -59,9 +59,34 @@ geolocator = Nominatim(user_agent="plot_script")
 max_distance_from_Krakow = 50
 
 # -------------------------------
+# 📂 Wczytaj miejscowości z pliku TXT
+# Format pliku: nazwa_miejscowości,lat,lon (jedna miejscowość w wierszu)
+def load_town_coords(filename="town_list.txt"):
+    towns = defaultdict(list)
+    if os.path.exists(filename):
+        with open(filename, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                try:
+                    parts = line.split(",")
+                    if len(parts) == 3:
+                        town = parts[0].strip().lower()
+                        lat = float(parts[1].strip())
+                        lon = float(parts[2].strip())
+                        towns[town].append((lat, lon))
+                except Exception as e:
+                    print(f"⚠️ Błąd w pliku TXT: {line} -> {e}")
+    else:
+        print("⚠️ Brak pliku town_list.txt")
+    return towns
+
+TOWN_COORDS = load_town_coords()
+
+# -------------------------------
 # 🔐 OneDrive token refresh
 def authenticate():
-    """Authenticate with OneDrive API using refresh token"""
     data = {
         'client_id': CLIENT_ID,
         'refresh_token': REFRESH_TOKEN,
@@ -76,14 +101,12 @@ def authenticate():
 # -------------------------------
 # ☁️ Upload file to OneDrive
 def upload_to_onedrive(file_path, token):
-    """Upload a file to OneDrive root directory"""
     headers = {
         'Authorization': f"Bearer {token['access_token']}",
         'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     }
     with open(file_path, 'rb') as f:
         file_data = f.read()
-
     upload_url = f'https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}:/content'
     r = requests.put(upload_url, headers=headers, data=file_data)
     if r.status_code in (200, 201):
@@ -94,10 +117,8 @@ def upload_to_onedrive(file_path, token):
 # -------------------------------
 # 📊 Create Excel file with headers and sheets
 def create_excel_with_sheets():
-    """Create Excel file with required sheets if it does not exist"""
     if not os.path.exists(EXCEL_FOLDER):
         os.makedirs(EXCEL_FOLDER)
-
     if not os.path.exists(EXCEL_FILE):
         wb = Workbook()
         wb.remove(wb.active)
@@ -112,11 +133,9 @@ def create_excel_with_sheets():
 # -------------------------------
 # 🔍 Utility functions
 def parse_price(price_str):
-    """Convert price string to integer"""
     return int(price_str.replace(' ', '').replace('zł', '').replace('PLN', '').replace(',', '').strip())
 
 def extract_relevant_town(location):
-    """Extract town name from location string"""
     parts = [part.strip() for part in location.split(',')]
     if parts[0].lower().startswith("ul.") and len(parts) > 1:
         return parts[1]
@@ -124,7 +143,6 @@ def extract_relevant_town(location):
         return parts[0]
 
 def safe_geocode(loc: str, max_retries: int = 2, timeout: int = 5):
-    """Try geocoding with retries and error handling"""
     for attempt in range(max_retries):
         try:
             return geolocator.geocode(loc, exactly_one=False, timeout=timeout)
@@ -134,9 +152,16 @@ def safe_geocode(loc: str, max_retries: int = 2, timeout: int = 5):
     return None
 
 def get_distance_to_krakow(town, county=""):
-    """Get distance and coordinates of a town relative to Kraków"""
-    queries = []
+    town_key = town.lower()
+    if town_key in TOWN_COORDS:  # 🔑 Najpierw sprawdzamy listę TXT
+        results = []
+        for lat, lon in TOWN_COORDS[town_key]:
+            distance = geodesic(KRAKOW_COORDS, (lat, lon)).km
+            results.append((round(distance, 2), lat, lon))
+        return results  # może być kilka miejscowości o tej samej nazwie
 
+    # jeśli brak w TXT → klasyczna geolokalizacja
+    queries = []
     if county and county.lower() in ALLOWED_COUNTIES:
         queries.append(f"{town}, {county} county, Małopolskie, Poland")
     queries.append(f"{town}, Małopolskie, Poland")
@@ -144,18 +169,16 @@ def get_distance_to_krakow(town, county=""):
     for query in queries:
         places = safe_geocode(query)
         if places:
+            results = []
             for p in places:
                 if hasattr(p, 'latitude') and hasattr(p, 'longitude'):
                     distance = geodesic(KRAKOW_COORDS, (p.latitude, p.longitude)).km
-                    if distance < max_distance_from_Krakow:
-                        return round(distance, 2), p.latitude, p.longitude
-
-            # fallback: use first found place
-            p = places[0]
-            return round(geodesic(KRAKOW_COORDS, (p.latitude, p.longitude)).km, 2), p.latitude, p.longitude
+                    results.append((round(distance, 2), p.latitude, p.longitude))
+            if results:
+                return results
 
     print(f"⚠️ Location not found: {town} ({county}) – setting distance as -1 km")
-    return -1.0, None, None
+    return [(-1.0, None, None)]
 
 # -------------------------------
 # 🧲 Scrape offers from Otodom
@@ -165,7 +188,6 @@ HEADERS_HTTP = {
 }
 
 def scrape_offers(base_link, name):
-    """Scrape offers from a given Otodom listing URL"""
     results = []
     today = datetime.date.today().strftime('%Y-%m-%d')
     county = name.replace("powiat ", "")
@@ -187,21 +209,22 @@ def scrape_offers(base_link, name):
                 price = parse_price(s.select_one('strong[data-cy="adPageHeaderPrice"]').text)
                 location = s.select_one('div[data-sentry-component="MapLink"] a').text.strip()
                 town = extract_relevant_town(location)
-                distance, lat, lon = get_distance_to_krakow(town, county)
 
-                results.append({
-                    'Title': title,
-                    'Location': location,
-                    'Price at first find': price,
-                    'Date first found': today,
-                    'Date last updated': today,
-                    'Price last updated': price,
-                    'Distance from Krakow (km)': distance,
-                    'Active': True,
-                    'Link': url,
-                    'Latitude': lat,
-                    'Longitude': lon
-                })
+                coords_list = get_distance_to_krakow(town, county)  # może być kilka punktów
+                for distance, lat, lon in coords_list:
+                    results.append({
+                        'Title': title,
+                        'Location': location,
+                        'Price at first find': price,
+                        'Date first found': today,
+                        'Date last updated': today,
+                        'Price last updated': price,
+                        'Distance from Krakow (km)': distance,
+                        'Active': True,
+                        'Link': url,
+                        'Latitude': lat,
+                        'Longitude': lon
+                    })
                 time.sleep(2)
             except Exception as e:
                 print(f"❌ Skipping offer due to error: {e}")
@@ -321,10 +344,13 @@ def main():
 
     generate_map(df_combined)
 
-    print(f"📦 Done. Uploading {EXCEL_FILE} and map to OneDrive...")
-    token = authenticate()
-    upload_to_onedrive(EXCEL_FILE, token)
-    upload_to_onedrive(MAP_FILE, token)
+    if CLIENT_ID and REFRESH_TOKEN:
+        print(f"📦 Done. Uploading {EXCEL_FILE} and map to OneDrive...")
+        token = authenticate()
+        upload_to_onedrive(EXCEL_FILE, token)
+        upload_to_onedrive(MAP_FILE, token)
+    else:
+        print("⚠️ OneDrive credentials not found. Skipping upload.")
 
 # -------------------------------
 # 🚀 MAIN SCRIPT ENTRY POINT
