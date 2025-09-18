@@ -10,7 +10,7 @@ from geopy.distance import geodesic
 import folium
 from folium.plugins import MarkerCluster
 from collections import defaultdict
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import re
 
 # =========================================
@@ -241,22 +241,33 @@ def generate_map(df: pd.DataFrame) -> None:
 
 # -------------------------------
 # 📅 Convert OLX date strings to dd.mm.yyyy format
-def parse_olx_date(date_str: str) -> str:
-    """Convert date string from OLX to yyyy-mm-dd format"""
-    date_str = date_str.lower()
+def parse_olx_date(date_str: str):
+    """Convert OLX date string to yyyy-mm-dd format"""
+    if not date_str or not isinstance(date_str, str):
+        return None
+
+    date_str = date_str.lower().strip()
     today = date.today()
     
-    # Handle "today" references
+    # Handle "today" and "yesterday"
     if "dzisiaj" in date_str or "odświeżono dzisiaj" in date_str:
         return today.strftime("%Y-%m-%d")
-    
-    # Match day month year pattern (e.g., '17 września 2025')
+    if "wczoraj" in date_str:
+        return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Handle dd.mm.yyyy format (e.g. 17.09.2025)
+    try:
+        return datetime.strptime(date_str, "%d.%m.%Y").strftime("%Y-%m-%d")
+    except ValueError:
+        pass
+
+    # Handle day month_name year (e.g. '17 września 2025')
     months = {
         "stycznia": 1, "lutego": 2, "marca": 3, "kwietnia": 4, "maja": 5,
         "czerwca": 6, "lipca": 7, "sierpnia": 8, "września": 9,
         "października": 10, "listopada": 11, "grudnia": 12
     }
-    
+
     match = re.search(r'(\d{1,2}) (\w+) (\d{4})', date_str)
     if match:
         day, month_str, year = match.groups()
@@ -264,7 +275,7 @@ def parse_olx_date(date_str: str) -> str:
         if month:
             return f"{year}-{month:02d}-{int(day):02d}"  # yyyy-mm-dd format
     
-    # Fallback: return original string
+    # Fallback: return as-is
     return date_str
 
 

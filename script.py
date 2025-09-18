@@ -5,41 +5,40 @@ import openpyxl
 from openpyxl.utils import get_column_letter
 from collections import defaultdict
 import requests
+import json
+from datetime import date, datetime
+from dotenv import load_dotenv
 
-# Importy Twoich skryptów (zakładam, że mają main() albo analogiczne funkcje uruchamiające)
+# Import skryptów źródłowych
 from otodom import main as main_script1
 from olx import main as main_script2
-from nieruchomosci_online import main as main_script3  # Twój nowy skrypt nieruchomosci-online
+from nieruchomosci_online import main as main_script3
 
 # -------------------------------
-# 🔧 Uncomment the following 2 lines locally to enable loading variables from the .env file
-from dotenv import load_dotenv
+# 🔧 Load secrets from .env
 load_dotenv()
 
 # -------------------------------
-# 🔐 Environment variables required in .env:
-# ONEDRIVE_CLIENT_ID=your_client_id
-# ONEDRIVE_REFRESH_TOKEN=your_refresh_token
-# 
-# NOTE: The .env file is not pushed to GitHub — add these values to GitHub Secrets as well
-# if you want to run the script automatically via GitHub Actions.
-# -------------------------------
-
-# -------------------------------
-# 🔐 OneDrive authentication variables (stored in .env)
+# 🔐 OneDrive auth
 CLIENT_ID = os.environ['ONEDRIVE_CLIENT_ID']
 REFRESH_TOKEN = os.environ['ONEDRIVE_REFRESH_TOKEN']
 SCOPES = ['offline_access', 'Files.ReadWrite.All']
 TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
 
-# Ścieżki do plików Excel generowanych przez poszczególne skrypty
+# -------------------------------
+# 📂 Pliki lokalne
 EXCEL_FILE_1 = os.path.join('dzialki', 'otodom_dzialki.xlsx')
 EXCEL_FILE_2 = os.path.join('dzialki', 'olx_dzialki.xlsx')
-EXCEL_FILE_3 = os.path.join('dzialki', 'nieruchomosci_online_dzialki.xlsx')  # musi być tak zapisany w main_script3
+EXCEL_FILE_3 = os.path.join('dzialki', 'nieruchomosci_online_dzialki.xlsx')
 
-# Ścieżki do scalonych plików
 EXCEL_MERGED = os.path.join('dzialki_merged', 'dzialki_merged.xlsx')
 MAP_MERGED = os.path.join('dzialki_merged', 'map_merged.html')
+SENT_JSON = os.path.join('dzialki_merged', 'sent_ads.json')
+
+# -------------------------------
+# 🤖 Telegram
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # -------------------------------
 # 🔐 OneDrive token refresh
@@ -62,11 +61,10 @@ def upload_to_onedrive(file_path, token):
     """Upload a file to OneDrive root directory"""
     headers = {
         'Authorization': f"Bearer {token['access_token']}",
-        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        'Content-Type': 'application/octet-stream'
     }
     with open(file_path, 'rb') as f:
         file_data = f.read()
-
     upload_url = f'https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}:/content'
     r = requests.put(upload_url, headers=headers, data=file_data)
     if r.status_code in (200, 201):
@@ -74,6 +72,61 @@ def upload_to_onedrive(file_path, token):
     else:
         print(f"❌ Upload failed: {r.status_code} {r.text}")
 
+# -------------------------------
+# ☁️ Download file from OneDrive
+def download_from_onedrive(file_path, token):
+    """Download a file from OneDrive if it exists"""
+    headers = {'Authorization': f"Bearer {token['access_token']}"}
+    url = f'https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}:/content'
+    r = requests.get(url, headers=headers)
+    if r.status_code == 200:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, "wb") as f:
+            f.write(r.content)
+        print(f"⬇️ Downloaded from OneDrive: {file_path}")
+        return True
+    else:
+        print(f"⚠️ No remote file found for {file_path} (status {r.status_code})")
+        return False
+
+# -------------------------------
+# 📦 Sent ads JSON
+def load_sent_ads():
+    """Load sent ads from JSON file"""
+    if os.path.exists(SENT_JSON):
+        with open(SENT_JSON, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    return set()
+
+def save_sent_ads(sent_ads):
+    """Save sent ads to JSON file"""
+    with open(SENT_JSON, "w", encoding="utf-8") as f:
+        json.dump(list(sent_ads), f, ensure_ascii=False, indent=2)
+
+# -------------------------------
+# 📲 Telegram
+def send_telegram_message(title, link, price, image_url=None):
+    """Send a message with optional photo to Telegram"""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Telegram not configured, skipping notification")
+        return
+
+    message = f"🏡 <b>{title}</b>\n💰 {price}\n🔗 <a href='{link}'>Zobacz ogłoszenie</a>"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+    requests.post(url, data=data)
+
+    if image_url:
+        url_photo = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+        data_photo = {"chat_id": TELEGRAM_CHAT_ID, "photo": image_url, "caption": title}
+        requests.post(url_photo, data=data_photo)
+
+# -------------------------------
+# 🔄 Merge Excels
 def merge_excels(files_list, output_file):
     dfs = []
     for idx, file in enumerate(files_list):
@@ -102,14 +155,11 @@ def merge_excels(files_list, output_file):
         return None
 
     df_combined = pd.concat(dfs, ignore_index=True)
-
-    # Keep all rows, do not remove duplicates
     df_unique = df_combined.reset_index(drop=True)
 
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     df_unique.to_excel(output_file, index=False)
 
-    # Auto column width
     wb = openpyxl.load_workbook(output_file)
     ws = wb.active
     for col_cells in ws.columns:
@@ -126,7 +176,8 @@ def merge_excels(files_list, output_file):
     print(f"💾 Merged Excel saved: {output_file}")
     return df_unique
 
-
+# -------------------------------
+# 🗺️ Map generation
 def generate_merged_map(df, map_path):
     KRAKOW_COORDS = (50.0647, 19.9450)
     m = folium.Map(location=KRAKOW_COORDS, zoom_start=10)
@@ -169,7 +220,6 @@ def generate_merged_map(df, map_path):
             tooltip = f"{len(listings)} ogłoszeń"
             source = listings[0].get("Source", "").lower()
 
-        # Kolor markera wg źródła
         if source == 'otodom':
             color = "green"
         elif source == 'olx':
@@ -189,7 +239,14 @@ def generate_merged_map(df, map_path):
     m.save(map_path)
     print(f"🗺️ Merged map saved: {map_path}")
 
+# -------------------------------
+# 🚀 Main
 def main():
+    token = authenticate()
+
+    # ⬇️ Najpierw pobierz sent_ads.json z OneDrive (jeśli istnieje)
+    download_from_onedrive(SENT_JSON, token)
+
     print("🚀 Uruchamiam skrypt 1 (Otodom)...")
     main_script1()
 
@@ -205,10 +262,46 @@ def main():
         print("🗺️ Tworzenie mapy z danych scalonych...")
         generate_merged_map(df_merged, MAP_MERGED)
 
-    print(f"📦 Done. Uploading {EXCEL_MERGED} and map to OneDrive...")
-    token = authenticate()
+    print(f"📦 Upload {EXCEL_MERGED}, map and sent_ads.json to OneDrive...")
     upload_to_onedrive(EXCEL_MERGED, token)
     upload_to_onedrive(MAP_MERGED, token)
+
+    today = date.today().strftime("%Y-%m-%d")
+    sent_ads = load_sent_ads()
+    current_ads = set()
+
+    for _, row in df_merged.iterrows():
+        link = row.get("Link")
+        if not link:
+            continue
+        current_ads.add(link)
+
+        # ✅ Normalizacja daty
+        date_first = str(row.get("Date first found"))
+        try:
+            if "." in date_first:
+                parsed_date = datetime.strptime(date_first, "%d.%m.%Y").strftime("%Y-%m-%d")
+            elif "-" in date_first:
+                parsed_date = datetime.strptime(date_first, "%Y-%m-%d").strftime("%Y-%m-%d")
+            else:
+                parsed_date = date_first
+        except:
+            parsed_date = date_first
+
+        if parsed_date == today and link not in sent_ads:
+            send_telegram_message(
+                title=row.get("Title", "Brak tytułu"),
+                link=link,
+                price=row.get("Price last updated", row.get("Price at first find", "?")),
+                image_url=row.get("Image", None)
+            )
+            sent_ads.add(link)
+
+    sent_ads = sent_ads.intersection(current_ads)
+    save_sent_ads(sent_ads)
+
+    # ☁️ Upload sent_ads.json
+    upload_to_onedrive(SENT_JSON, token)
 
 if __name__ == "__main__":
     main()
