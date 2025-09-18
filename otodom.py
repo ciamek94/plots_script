@@ -99,6 +99,22 @@ def authenticate():
     return resp.json()
 
 # -------------------------------
+# ☁️ Download file from OneDrive
+def download_from_onedrive(file_path, token):
+    """Download file from OneDrive and save localy"""
+    headers = {
+        'Authorization': f"Bearer {token['access_token']}",
+    }
+    download_url = f'https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}:/content'
+    r = requests.get(download_url, headers=headers)
+    if r.status_code == 200:
+        with open(file_path, 'wb') as f:
+            f.write(r.content)
+        print(f"✅ File downloaded from OneDrive: {file_path}")
+    else:
+        raise Exception(f"❌ Failed to download file: {r.status_code} {r.text}")
+
+# -------------------------------
 # ☁️ Upload file to OneDrive
 def upload_to_onedrive(file_path, token):
     headers = {
@@ -333,6 +349,13 @@ def generate_map(df):
 # -------------------------------
 # 🚀 MAIN Function
 def main():
+    if CLIENT_ID and REFRESH_TOKEN:
+        token = authenticate()
+        # Download newest version from OneDrive
+        download_from_onedrive(EXCEL_FILE, token)
+    else:
+        print("⚠️ OneDrive credentials not found. Using local Excel copy.")
+
     create_excel_with_sheets()
     update_sheet(scrape_offers(BASE_LINK_KRAKOW, 'powiat krakowski'), 'powiat krakowski')
     update_sheet(scrape_offers(BASE_LINK_WIELICKI, 'powiat wielicki'), 'powiat wielicki')
@@ -344,13 +367,14 @@ def main():
 
     generate_map(df_combined)
 
+    # Upload updated file on OneDrive
     if CLIENT_ID and REFRESH_TOKEN:
-        print(f"📦 Done. Uploading {EXCEL_FILE} and map to OneDrive...")
-        token = authenticate()
+        print(f"📦 Uploading updated Excel and map to OneDrive...")
         upload_to_onedrive(EXCEL_FILE, token)
         upload_to_onedrive(MAP_FILE, token)
     else:
         print("⚠️ OneDrive credentials not found. Skipping upload.")
+
 
 # -------------------------------
 # 🚀 MAIN SCRIPT ENTRY POINT

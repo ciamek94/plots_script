@@ -106,6 +106,23 @@ def upload_to_onedrive(file_path, token):
         print(f"❌ Upload failed: {r.status_code} {r.text}")
 
 # -------------------------------
+# Download file from OneDrive
+def download_from_onedrive(file_path, token):
+    """Download a file from OneDrive and save it locally"""
+    headers = {
+        'Authorization': f"Bearer {token['access_token']}",
+    }
+    download_url = f'https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}:/content'
+    r = requests.get(download_url, headers=headers)
+    if r.status_code == 200:
+        with open(file_path, 'wb') as f:
+            f.write(r.content)
+        print(f"✅ File downloaded from OneDrive: {file_path}")
+    else:
+        print(f"⚠️ Failed to download file from OneDrive: {r.status_code} {r.text}")
+
+
+# -------------------------------
 # Get distance from Kraków with local list check, county filter and geopy fallback
 def get_distance_from_krakow(location, max_retries=3):
     """Return list of (distance, lat, lon) if within allowed counties and distance"""
@@ -155,6 +172,25 @@ def get_distance_from_krakow(location, max_retries=3):
 def main():
     os.makedirs(EXCEL_FOLDER, exist_ok=True)
     total_raw = total_unique = total_geocoded = 0
+
+    # -------------------------------
+    # Load existing Excel to keep history
+    if CLIENT_ID and REFRESH_TOKEN:
+        print("☁️ OneDrive credentials found. Downloading latest Excel copy...")
+        token = authenticate()
+        download_from_onedrive(EXCEL_FILE, token)
+    else:
+        print("⚠️ OneDrive credentials not found. Using local Excel copy.")
+
+    if os.path.exists(EXCEL_FILE):
+        df_existing = pd.read_excel(EXCEL_FILE)
+        print(f"✅ Loaded existing Excel with {len(df_existing)} rows")
+    else:
+        df_existing = pd.DataFrame(columns=[
+            'Title','Location','Price at first find','Date first found','Date last updated',
+            'Price last updated','Distance from Krakow (km)','Active','Link','Latitude','Longitude'
+        ])
+        print("ℹ️ No existing Excel file found, creating new DataFrame")
 
     # Load existing Excel to keep history
     if os.path.exists(EXCEL_FILE):

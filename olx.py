@@ -10,7 +10,8 @@ from geopy.distance import geodesic
 import folium
 from folium.plugins import MarkerCluster
 from collections import defaultdict
-from dotenv import load_dotenv
+from datetime import datetime, date
+import re
 
 # =========================================
 # Constants & output paths
@@ -83,7 +84,24 @@ def upload_to_onedrive(file_path, token):
     else:
         print(f"❌ Upload failed: {r.status_code} {r.text}")
 
+# -------------------------------
+# ☁️ Download file from OneDrive
+def download_from_onedrive(file_path, token):
+    """Download a file from OneDrive and save it locally"""
+    headers = {
+        'Authorization': f"Bearer {token['access_token']}",
+    }
+    download_url = f'https://graph.microsoft.com/v1.0/me/drive/root:/{file_path}:/content'
+    r = requests.get(download_url, headers=headers)
+    if r.status_code == 200:
+        with open(file_path, 'wb') as f:
+            f.write(r.content)
+        print(f"✅ File downloaded from OneDrive: {file_path}")
+    else:
+        print(f"⚠️ Failed to download file from OneDrive: {r.status_code} {r.text}")
 
+
+# -------------------------------
 def clean_price(price_str: str) -> str:
     if not price_str:
         return ""
@@ -98,7 +116,9 @@ def parse_location_date(loc_date_str: str):
         return parts[0].strip(), parts[1].strip()
     return loc_date_str.strip(), ""
 
+# -------------------------------
 def autosize_columns(filename: str) -> None:
+    """Autosize Excel columns based on content length"""
     wb = openpyxl.load_workbook(filename)
     ws = wb.active
     for column_cells in ws.columns:
@@ -110,6 +130,7 @@ def autosize_columns(filename: str) -> None:
         ws.column_dimensions[column].width = max_length + 2
     wb.save(filename)
 
+# -------------------------------
 def load_towns(file_path="town_list.txt"):
     """Load towns and their coordinates from file"""
     towns = defaultdict(list)
@@ -125,6 +146,7 @@ def load_towns(file_path="town_list.txt"):
 
 TOWN_COORDS = load_towns("town_list.txt")
 
+# -------------------------------
 def get_distance_from_krakow(location: str):
     """Return a list of (distance, lat, lon) for all coordinates of a town within MAX_DISTANCE_KM"""
     town = location.split("(")[0].strip().lower()
@@ -151,6 +173,7 @@ def get_distance_from_krakow(location: str):
 
     return results  # always return a list (can be empty)
 
+# -------------------------------
 def check_if_active(url: str, headers: dict) -> bool:
     """Check if a listing URL is still active"""
     try:
@@ -162,6 +185,7 @@ def check_if_active(url: str, headers: dict) -> bool:
     except Exception:
         return True
 
+# -------------------------------
 def get_with_retry(url: str, headers: dict, retries: int = 5):
     """Retry GET request up to N times"""
     for _ in range(retries):
@@ -174,6 +198,7 @@ def get_with_retry(url: str, headers: dict, retries: int = 5):
         time.sleep(random.uniform(2.5, 5.0))
     return None
 
+# -------------------------------
 def generate_map(df: pd.DataFrame) -> None:
     """Generate HTML map with markers for listings"""
     m = folium.Map(location=KRAKOW_COORDS, zoom_start=10)
@@ -214,6 +239,35 @@ def generate_map(df: pd.DataFrame) -> None:
     m.save(MAP_FILE)
     print(f"🗺️ Map saved to: {MAP_FILE} (markers plotted: {plotted})")
 
+# -------------------------------
+# 📅 Convert OLX date strings to dd.mm.yyyy format
+def parse_olx_date(date_str: str) -> str:
+    """Convert date string from OLX to yyyy-mm-dd format"""
+    date_str = date_str.lower()
+    today = date.today()
+    
+    # Handle "today" references
+    if "dzisiaj" in date_str or "odświeżono dzisiaj" in date_str:
+        return today.strftime("%Y-%m-%d")
+    
+    # Match day month year pattern (e.g., '17 września 2025')
+    months = {
+        "stycznia": 1, "lutego": 2, "marca": 3, "kwietnia": 4, "maja": 5,
+        "czerwca": 6, "lipca": 7, "sierpnia": 8, "września": 9,
+        "października": 10, "listopada": 11, "grudnia": 12
+    }
+    
+    match = re.search(r'(\d{1,2}) (\w+) (\d{4})', date_str)
+    if match:
+        day, month_str, year = match.groups()
+        month = months.get(month_str, 0)
+        if month:
+            return f"{year}-{month:02d}-{int(day):02d}"  # yyyy-mm-dd format
+    
+    # Fallback: return original string
+    return date_str
+
+
 # =========================================
 # Main scraping & export
 # =========================================
@@ -232,6 +286,14 @@ def main():
         "Accept-Language": "pl-PL,pl;q=0.9"
     }
 
+    # If OneDrive credentials are set, download the latest Excel
+    if CLIENT_ID and REFRESH_TOKEN:
+        print("☁️ OneDrive credentials found. Downloading latest Excel copy...")
+        token = authenticate()
+        download_from_onedrive(EXCEL_FILE, token)
+    else:
+        print("⚠️ OneDrive credentials not found. Using local Excel copy.")
+
     try:
         df_existing = pd.read_excel(EXCEL_FILE)
         if not df_existing.empty and "Link" in df_existing.columns:
@@ -244,6 +306,12 @@ def main():
             "Active", "Link", "Latitude", "Longitude"
         ])
         print("📄 No existing Excel file found. A new one will be created.")
+
+    # -------------------------------
+    # 📅 Normalize existing dates to dd.mm.yyyy format
+    if not df_existing.empty:
+        df_existing["Date first found"] = df_existing["Date first found"].apply(parse_olx_date)
+        df_existing["Date last updated"] = df_existing["Date last updated"].apply(parse_olx_date)
 
     all_listings = []
     page = 1
@@ -286,7 +354,8 @@ def main():
 
             loc_date_elem = card.find("p", {"data-testid": "location-date"})
             loc_date = loc_date_elem.get_text(strip=True) if loc_date_elem else ""
-            location, date_added = parse_location_date(loc_date)
+            location, date_added_raw = parse_location_date(loc_date)
+            date_added = parse_olx_date(date_added_raw)
 
             # Get all coordinates for this location
             coords_list = get_distance_from_krakow(location)
@@ -337,9 +406,10 @@ def main():
         "Date last updated", "Price last updated", "Distance from Krakow (km)",
         "Active", "Link", "Latitude", "Longitude"
     ]
+
     df_updated = df_merged[columns_final].copy()
     df_updated.to_excel(EXCEL_FILE, index=False)
-    autosize_columns(EXCEL_FILE)
+    autosize_columns(EXCEL_FILE)  # Fixed: function is now defined before main
     print(f"📂 Listings saved to Excel file: {EXCEL_FILE}")
     print(f"🧮 Rows in Excel: {len(df_updated)} (active: {int(df_updated['Active'].sum())})")
 
